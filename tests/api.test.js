@@ -40,22 +40,17 @@ async function req(path, { method = 'GET', body, cookie } = {}) {
 
 before(async () => {
   server = await start(0);
+  // The listener must never hold the event loop open: the test runner only
+  // runs finalisers (and prints the summary) once the loop can drain.
+  server.unref();
   base = `http://127.0.0.1:${server.address().port}`;
 });
 
 after(async () => {
-  console.error('[after] begin');
-  // fetch() keeps connections alive; destroy them so the process can exit.
-  if (server.closeAllConnections) {
-    console.error('[after] closing connections');
-    server.closeAllConnections();
-  }
+  // Safety net for early-exit paths: release sockets and the listener so the
+  // runner can finalise (the cleanup test normally closes the server already).
+  if (server.closeAllConnections) server.closeAllConnections();
   await new Promise((resolve) => server.close(resolve));
-  console.error('[after] server closed');
-});
-
-process.on('exit', () => {
-  process.stderr.write('[exit] process leaving\n');
 });
 
 /* ---------------- auth ---------------- */
@@ -256,4 +251,12 @@ test('logout destroys the session', async () => {
   assert.equal(out.status, 200);
   const me = await req('/api/auth/me', { cookie: cookieA });
   assert.equal(me.status, 401);
+});
+
+test('cleanup — server shutdown does not block exit', async () => {
+  // Destroy idle keep-alive sockets first so close() resolves immediately
+  // instead of waiting out the client's ~4s keep-alive timeout.
+  server.closeAllConnections();
+  await new Promise((resolve) => server.close(resolve));
+  assert.equal(server.listening, false);
 });
