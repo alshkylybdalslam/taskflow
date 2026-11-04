@@ -9,7 +9,7 @@ that tells you exactly where you stand.
 
 [![CI](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml)
 [![Coverage](https://img.shields.io/badge/coverage-91.35%25-brightgreen.svg)](#-testing--coverage)
-[![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x%20%7C%2022.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -197,7 +197,7 @@ All files          |   91.35 |    73.61 |     100 |   91.35 |
 -------------------|---------|----------|---------|---------|
 ```
 
-CI runs the suite on every push and pull request against Node 18 **and** Node 20.
+CI runs the suite on every push and pull request against Node 18, 20 **and** 22.
 
 ## 🗺 Roadmap
 
