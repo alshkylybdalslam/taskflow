@@ -7,6 +7,8 @@
  */
 
 process.env.DB_PATH = ':memory:';
+// Low auth rate limit so the brute-force test can trip it quickly.
+process.env.AUTH_RATE_LIMIT_MAX = '10';
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -24,18 +26,24 @@ function extractCookie(res) {
   return raw ? raw.split(';')[0] : null;
 }
 
-async function req(path, { method = 'GET', body, cookie } = {}) {
+/** Local YYYY-MM-DD, offset by n days (for due-date tests). */
+function day(n = 0) {
+  return new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
+}
+
+async function req(path, { method = 'GET', body, cookie, auth } = {}) {
   const res = await fetch(`${base}${path}`, {
     method,
     headers: {
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(cookie ? { Cookie: cookie } : {}),
+      ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
   let data = null;
   try { data = await res.json(); } catch { /* no body */ }
-  return { status: res.status, data, cookie: extractCookie(res) };
+  return { status: res.status, data, cookie: extractCookie(res), headers: res.headers };
 }
 
 before(async () => {
@@ -237,13 +245,259 @@ test('dashboard returns summary, projects and a 7-day series', async () => {
   assert.ok(data.projects.some((p) => p.id === projectId));
 });
 
+/* ---------------- due dates & deadline filters ---------------- */
+
+test('rejects a malformed due date', async () => {
+  const { status, data } = await req('/api/tasks', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { project_id: projectId, title: 'Bad date', due_date: 'tomorrow' },
+  });
+  assert.equal(status, 400);
+  assert.match(data.error, /due date/i);
+});
+
+test('deadline filters isolate overdue, due-today and undated tasks', async () => {
+  const mk = (title, due_date, status = 'todo') =>
+    req('/api/tasks', {
+      method: 'POST',
+      cookie: cookieA,
+      body: { project_id: projectId, title, due_date, status },
+    });
+
+  const late = await mk('Chase the overdue invoice', day(-2));
+  const today = await mk('Fix the signup bug', day(0), 'in_progress');
+  const undated = await mk('Someday-ish idea', null);
+  assert.equal(late.status, 201);
+  assert.equal(today.status, 201);
+  assert.equal(undated.status, 201);
+
+  const titles = (list) => list.data.tasks.map((t) => t.title);
+
+  const overdue = await req('/api/tasks?due=overdue', { cookie: cookieA });
+  assert.ok(titles(overdue).includes('Chase the overdue invoice'));
+  assert.ok(!titles(overdue).includes('Someday-ish idea'));
+
+  const dueToday = await req('/api/tasks?due=today', { cookie: cookieA });
+  assert.deepEqual(titles(dueToday), ['Fix the signup bug']);
+
+  const noDate = await req('/api/tasks?due=none', { cookie: cookieA });
+  assert.ok(titles(noDate).includes('Someday-ish idea'));
+  assert.ok(!titles(noDate).includes('Chase the overdue invoice'));
+
+  // Completing the late task clears it from the overdue list.
+  await req(`/api/tasks/${late.data.task.id}`, {
+    method: 'PUT',
+    cookie: cookieA,
+    body: { status: 'done' },
+  });
+  const overdueAfter = await req('/api/tasks?due=overdue', { cookie: cookieA });
+  assert.ok(!titles(overdueAfter).includes('Chase the overdue invoice'));
+});
+
+/* ---------------- labels ---------------- */
+
+let labelId;
+let labelId2;
+let sandboxProjectId;
+
+test('creates labels on a project (and rejects duplicates)', async () => {
+  const created = await req(`/api/projects/${projectId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Research', color: '#0ea5e9' },
+  });
+  assert.equal(created.status, 201);
+  labelId = created.data.label.id;
+
+  const created2 = await req(`/api/projects/${projectId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Ship It', color: '#10b981' },
+  });
+  assert.equal(created2.status, 201);
+  labelId2 = created2.data.label.id;
+
+  const dupe = await req(`/api/projects/${projectId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'research' }, // same name, different case
+  });
+  assert.equal(dupe.status, 409);
+
+  const badColor = await req(`/api/projects/${projectId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Nope', color: 'red' },
+  });
+  assert.equal(badColor.status, 400);
+});
+
+test('attaches and detaches labels on a task', async () => {
+  const attach = await req(`/api/tasks/${taskId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { label_id: labelId },
+  });
+  assert.equal(attach.status, 201);
+  assert.ok(attach.data.labels.some((l) => l.id === labelId));
+
+  // Task listings now carry their labels.
+  const list = await req('/api/tasks?q=Design the landing page', { cookie: cookieA });
+  assert.ok(list.data.tasks[0].labels.some((l) => l.name === 'Research'));
+
+  // Setting label_ids on update replaces the assignment.
+  const replace = await req(`/api/tasks/${taskId}`, {
+    method: 'PUT',
+    cookie: cookieA,
+    body: { label_ids: [labelId2] },
+  });
+  assert.equal(replace.status, 200);
+  const names = replace.data.task.labels.map((l) => l.name);
+  assert.deepEqual(names, ['Ship It']);
+
+  const detach = await req(`/api/tasks/${taskId}/labels/${labelId2}`, {
+    method: 'DELETE',
+    cookie: cookieA,
+  });
+  assert.equal(detach.status, 200);
+  const after = await req('/api/tasks?q=Design the landing page', { cookie: cookieA });
+  assert.equal(after.data.tasks[0].labels.length, 0);
+});
+
+test('filters tasks by label', async () => {
+  await req(`/api/tasks/${taskId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { label_id: labelId },
+  });
+
+  const filtered = await req(`/api/tasks?label_id=${labelId}`, { cookie: cookieA });
+  assert.equal(filtered.data.tasks.length, 1);
+  assert.equal(filtered.data.tasks[0].id, taskId);
+
+  const wrongProject = await req(`/api/tasks/${taskId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { label_id: 999999 },
+  });
+  assert.equal(wrongProject.status, 404);
+});
+
+test("labels can't cross project boundaries and are invisible to other users", async () => {
+  // Second project owned by the same user → its label must not attach here.
+  const sandbox = await req('/api/projects', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Label Sandbox' },
+  });
+  sandboxProjectId = sandbox.data.project.id;
+  const otherLabel = await req(`/api/projects/${sandboxProjectId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Elsewhere' },
+  });
+
+  const cross = await req(`/api/tasks/${taskId}/labels`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { label_id: otherLabel.data.label.id },
+  });
+  assert.equal(cross.status, 400);
+
+  // Another user can't list, create or delete my labels.
+  const listB = await req(`/api/projects/${projectId}/labels`, { cookie: cookieB });
+  assert.equal(listB.status, 404);
+  const createB = await req(`/api/projects/${projectId}/labels`, {
+    method: 'POST',
+    cookie: cookieB,
+    body: { name: 'Sneaky' },
+  });
+  assert.equal(createB.status, 404);
+  const deleteB = await req(`/api/labels/${labelId}`, { method: 'DELETE', cookie: cookieB });
+  assert.equal(deleteB.status, 404);
+
+  // Clean up the sandbox project (cascades its labels).
+  await req(`/api/projects/${sandboxProjectId}`, { method: 'DELETE', cookie: cookieA });
+});
+
+/* ---------------- API tokens ---------------- */
+
+let apiSecret;
+let apiTokenId;
+
+test('creating an API token reveals the secret exactly once', async () => {
+  const { status, data } = await req('/api/tokens', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'CI bot' },
+  });
+  assert.equal(status, 201);
+  assert.match(data.secret, /^tf_[0-9a-f]{40}$/);
+  assert.equal(data.token.prefix, data.secret.slice(0, 9));
+  assert.equal(data.token.last_used_at, null);
+  apiSecret = data.secret;
+  apiTokenId = data.token.id;
+});
+
+test('a bearer token authenticates API requests without a cookie', async () => {
+  const me = await req('/api/auth/me', { auth: apiSecret });
+  assert.equal(me.status, 200);
+  assert.equal(me.data.user.email, 'ada@example.com');
+
+  const projects = await req('/api/projects', { auth: apiSecret });
+  assert.equal(projects.status, 200);
+});
+
+test('listing tokens never leaks the secret; garbage tokens are rejected', async () => {
+  const { data } = await req('/api/tokens', { cookie: cookieA });
+  assert.equal(data.tokens.length, 1);
+  assert.ok(!JSON.stringify(data.tokens).includes(apiSecret));
+
+  const bogus = await req('/api/auth/me', { auth: 'tf_deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' });
+  assert.equal(bogus.status, 401);
+});
+
+test('revoking a token revokes access immediately', async () => {
+  const del = await req(`/api/tokens/${apiTokenId}`, { method: 'DELETE', cookie: cookieA });
+  assert.equal(del.status, 200);
+  const after = await req('/api/auth/me', { auth: apiSecret });
+  assert.equal(after.status, 401);
+  const again = await req(`/api/tokens/${apiTokenId}`, { method: 'DELETE', cookie: cookieA });
+  assert.equal(again.status, 404);
+});
+
+/* ---------------- rate limiting ---------------- */
+
+test('auth endpoints trip the brute-force rate limiter', async () => {
+  let sawLimit = false;
+  for (let i = 0; i < 15 && !sawLimit; i++) {
+    const out = await req('/api/auth/login', {
+      method: 'POST',
+      body: { email: 'ada@example.com', password: 'definitely-not-the-password' },
+    });
+    if (out.status === 429) {
+      sawLimit = true;
+      assert.match(out.data.error, /too many/i);
+    } else {
+      assert.equal(out.status, 401); // plain bad-password failures until the limit trips
+    }
+  }
+  assert.ok(sawLimit, 'expected the limiter to trip within 15 attempts');
+});
+
 /* ---------------- logout & cascade ---------------- */
 
-test('deleting a project cascades to its tasks', async () => {
+test('deleting a project cascades to its tasks and labels', async () => {
   const del = await req(`/api/projects/${projectId}`, { method: 'DELETE', cookie: cookieA });
   assert.equal(del.status, 200);
   const tasks = await req('/api/tasks', { cookie: cookieA });
   assert.ok(!tasks.data.tasks.some((t) => t.project_id === projectId));
+  const labels = await req('/api/labels', { cookie: cookieA });
+  assert.ok(
+    !labels.data.labels.some((l) => l.project_id === projectId),
+    'labels should cascade with their project'
+  );
 });
 
 test('logout destroys the session', async () => {

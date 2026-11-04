@@ -7,6 +7,8 @@ const authRoutes = require('./routes/auth');
 const projectRoutes = require('./routes/projects');
 const taskRoutes = require('./routes/tasks');
 const dashboardRoutes = require('./routes/dashboard');
+const labelRoutes = require('./routes/labels');
+const tokenRoutes = require('./routes/tokens');
 
 const app = express();
 app.disable('x-powered-by');
@@ -17,6 +19,9 @@ app.use('/api/auth', authRoutes);
 app.use('/api/projects', projectRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/tokens', tokenRoutes);
+// Label endpoints live under /projects/… and /tasks/… paths:
+app.use('/api', labelRoutes);
 
 // Unknown API endpoints must return JSON, never fall through to the SPA.
 app.use('/api', (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));

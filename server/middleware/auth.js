@@ -50,30 +50,73 @@ function endSession(res, token) {
   res.clearCookie(SESSION_COOKIE, { path: '/' });
 }
 
-/** Express middleware: reject unauthenticated requests, attach req.user. */
-function requireAuth(req, res, next) {
-  const token = getSessionToken(req);
-  if (!token) {
-    return res.status(401).json({ error: 'You need to sign in to do that.' });
-  }
+/** SHA-256 hex digest — how API tokens are stored (never the raw value). */
+function hashToken(raw) {
+  return require('node:crypto').createHash('sha256').update(raw).digest('hex');
+}
+
+/** Look up an `Authorization: Bearer tf_…` personal access token. */
+function userFromApiToken(req) {
+  const header = req.headers.authorization || '';
+  if (!header.startsWith('Bearer ')) return null;
+  const raw = header.slice(7).trim();
+  if (!raw) return null;
 
   const row = db
     .prepare(
-      `SELECT u.id, u.name, u.email, s.expires_at
-         FROM sessions s
-         JOIN users u ON u.id = s.user_id
-        WHERE s.token = ?`
+      `SELECT u.id, u.name, u.email
+         FROM api_tokens t
+         JOIN users u ON u.id = t.user_id
+        WHERE t.token_hash = ?`
     )
-    .get(token);
+    .get(hashToken(raw));
+  if (!row) return null;
 
-  if (!row || row.expires_at <= new Date().toISOString()) {
+  // Keep a lightweight "last used" trail for the tokens screen.
+  db.prepare("UPDATE api_tokens SET last_used_at = datetime('now') WHERE token_hash = ?").run(
+    hashToken(raw)
+  );
+  return row;
+}
+
+/**
+ * Express middleware: reject unauthenticated requests, attach req.user.
+ * Accepts either a session cookie (browser) or a bearer API token (scripts).
+ */
+function requireAuth(req, res, next) {
+  const token = getSessionToken(req);
+
+  if (token) {
+    const row = db
+      .prepare(
+        `SELECT u.id, u.name, u.email, s.expires_at
+           FROM sessions s
+           JOIN users u ON u.id = s.user_id
+          WHERE s.token = ?`
+      )
+      .get(token);
+
+    if (row && row.expires_at > new Date().toISOString()) {
+      req.user = { id: row.id, name: row.name, email: row.email };
+      req.sessionToken = token;
+      return next();
+    }
+    // Expired or unknown cookie: drop it, then fall through (a bearer token
+    // may still be attached to the same request).
     if (row) db.prepare('DELETE FROM sessions WHERE token = ?').run(token);
-    return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
   }
 
-  req.user = { id: row.id, name: row.name, email: row.email };
-  req.sessionToken = token;
-  next();
+  const apiUser = userFromApiToken(req);
+  if (apiUser) {
+    req.user = { id: apiUser.id, name: apiUser.name, email: apiUser.email };
+    req.apiToken = true;
+    return next();
+  }
+
+  if (token) {
+    return res.status(401).json({ error: 'Your session has expired. Please sign in again.' });
+  }
+  return res.status(401).json({ error: 'You need to sign in to do that.' });
 }
 
 module.exports = {
@@ -82,4 +125,5 @@ module.exports = {
   startSession,
   endSession,
   requireAuth,
+  hashToken,
 };

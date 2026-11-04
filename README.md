@@ -4,9 +4,12 @@
 
 **A full-stack task & project manager — built with Node.js, Express & SQLite.**
 
-Projects, tasks, priorities, deadlines and a dashboard that tells you exactly where you stand.
+Projects, tasks, labels, deadlines, a drag-and-drop kanban board and a dashboard
+that tells you exactly where you stand.
 
-[![Node.js](https://img.shields.io/badge/Node.js-18.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![CI](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml)
+[![Coverage](https://img.shields.io/badge/coverage-91.35%25-brightgreen.svg)](#-testing--coverage)
+[![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
@@ -17,14 +20,32 @@ Projects, tasks, priorities, deadlines and a dashboard that tells you exactly wh
 
 ## ✨ Features
 
-- **🔐 Accounts & sessions** — register/login with bcrypt password hashing and httpOnly session cookies
+- **🔐 Accounts & sessions** — register/login with bcrypt password hashing, httpOnly session cookies and **rate-limited** credential endpoints (brute-force protection)
 - **📁 Projects** — create colour-coded projects with live progress tracking
 - **✔ Tasks** — status (`To do → In progress → Done`), priority, due dates, descriptions
-- **🔎 Filtering & search** — by project, status, priority, or free-text search
+- **🗂 Kanban board** — drag & drop tasks between columns (native HTML5 DnD, zero libraries), with a List ⇄ Board toggle remembered across visits
+- **🏷 Labels** — project-scoped tags on a `task_labels` junction table; create, assign, filter and delete them from the UI
+- **⏰ Deadlines** — due dates on every task, overdue highlighting, and *Overdue / Due today / No due date* filters
+- **🔎 Filtering & search** — by project, status, priority, deadline, label, or free-text search
 - **📊 Dashboard** — status donut, 7-day completion trend, per-project progress, upcoming deadlines and overdue alerts — all in a single API round trip
-- **📱 Responsive UI** — polished single-page frontend with modals, toasts and empty states
+- **🔑 API tokens** — personal access tokens (`Bearer tf_…`) for scripted access; only the SHA-256 hash is stored, the secret is shown exactly once
 - **🌗 Dark mode** — one-click theme toggle, persisted in `localStorage` and applied before first paint (no flash)
-- **🧪 Tested** — integration tests covering auth, CRUD, ownership rules and the dashboard
+- **📱 Responsive UI** — polished single-page frontend with modals, toasts and empty states
+- **🧪 Tested** — 31 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines and rate limiting
+
+## 📸 Screenshots
+
+| Dashboard | Tasks & filters |
+|-----------|-----------------|
+| <img src="docs/dashboard.png" alt="Dashboard" width="100%"> | <img src="docs/tasks.png" alt="Tasks page with filters and label chips" width="100%"> |
+
+**Kanban board** — drag a card to change its status:
+
+<img src="docs/board.png" alt="Kanban board with labels and deadlines" width="100%">
+
+…and it looks just as good in dark mode:
+
+<img src="docs/board-dark.png" alt="Kanban board in dark mode" width="100%">
 
 ## 🛠 Tech stack
 
@@ -32,14 +53,15 @@ Projects, tasks, priorities, deadlines and a dashboard that tells you exactly wh
 |------------|------------|
 | Backend    | Node.js, Express 4 |
 | Database   | SQLite via `better-sqlite3` (WAL mode, foreign keys) |
-| Auth       | bcryptjs password hashing + opaque session tokens in httpOnly cookies |
+| Auth       | bcryptjs password hashing, opaque session tokens in httpOnly cookies, bearer API tokens, `express-rate-limit` on auth endpoints |
 | Frontend   | Vanilla JS SPA, hand-rolled SVG/CSS charts (no framework, no chart library) |
-| Testing    | Node built-in test runner (`node --test`) + `fetch` |
+| Testing    | Node built-in test runner (`node --test`) + `fetch`, coverage via `c8` |
+| Delivery   | GitHub Actions CI (Node 18 + 20), multi-stage Dockerfile |
 
 ## 🚀 Quick start
 
 ```bash
-git clone https://github.com/<your-username>/taskflow.git
+git clone https://github.com/alshkylybdalslam/taskflow.git
 cd taskflow
 npm install
 npm run seed     # optional: demo data
@@ -48,35 +70,59 @@ npm start        # → http://localhost:3000
 
 **Demo account** (after seeding): `demo@taskflow.dev` / `demo1234`
 
+### 🐳 Docker
+
+```bash
+docker build -t taskflow .
+docker run -p 3000:3000 -v taskflow-data:/app/data taskflow
+```
+
+The SQLite file lives in the `/app/data` volume, so your data survives container
+rebuilds. A built-in `HEALTHCHECK` keeps `docker ps` honest.
+
 ### Scripts
 
-| Command         | What it does |
-|-----------------|--------------|
-| `npm start`     | Start the server on port 3000 (`PORT` env overrides) |
-| `npm run dev`   | Start with auto-reload on file changes |
-| `npm run seed`  | Load demo projects & tasks (`-- --force` to reset) |
-| `npm test`      | Run the integration test suite |
+| Command              | What it does |
+|----------------------|--------------|
+| `npm start`          | Start the server on port 3000 (`PORT` env overrides) |
+| `npm run dev`        | Start with auto-reload on file changes |
+| `npm run seed`       | Load demo projects, tasks & labels (`-- --force` to reset) |
+| `npm test`           | Run the integration test suite |
+| `npm run coverage`   | Run the tests under `c8` and print a coverage table (also writes `lcov`) |
 
 ## 🔌 API overview
 
-All endpoints are JSON. Protected routes require a session cookie.
+All endpoints are JSON. Protected routes accept **either** a session cookie
+(browser) **or** `Authorization: Bearer tf_…` (scripts) — see
+[API tokens](#-api-tokens).
 
 | Method | Endpoint                | Description |
 |--------|-------------------------|-------------|
-| POST   | `/api/auth/register`    | Create an account |
-| POST   | `/api/auth/login`       | Sign in |
+| POST   | `/api/auth/register`    | Create an account *(rate-limited)* |
+| POST   | `/api/auth/login`       | Sign in *(rate-limited)* |
 | POST   | `/api/auth/logout`      | Sign out |
 | GET    | `/api/auth/me`          | Current user |
 | GET    | `/api/projects`         | List projects with task stats |
 | POST   | `/api/projects`         | Create project |
 | GET    | `/api/projects/:id`     | One project with task stats |
 | PUT    | `/api/projects/:id`     | Update project |
-| DELETE | `/api/projects/:id`     | Delete project (cascades tasks) |
-| GET    | `/api/tasks`            | List tasks — `?project_id= &status= &priority= &q=` |
-| POST   | `/api/tasks`            | Create task |
-| PUT    | `/api/tasks/:id`        | Update task (partial) |
+| DELETE | `/api/projects/:id`     | Delete project (cascades tasks & labels) |
+| GET    | `/api/tasks`            | List tasks — `?project_id= &status= &priority= &due= &label_id= &q=` |
+| POST   | `/api/tasks`            | Create task (`label_ids` optional) |
+| PUT    | `/api/tasks/:id`        | Update task (partial; `label_ids` replaces assignments) |
 | DELETE | `/api/tasks/:id`        | Delete task |
+| GET    | `/api/labels`           | All labels across my projects |
+| DELETE | `/api/labels/:id`       | Delete a label (unassigns it everywhere) |
+| GET    | `/api/projects/:id/labels`  | Labels of one project |
+| POST   | `/api/projects/:id/labels`  | Create a label |
+| POST   | `/api/tasks/:id/labels`     | Attach a label (`{ label_id }`) |
+| DELETE | `/api/tasks/:id/labels/:labelId` | Detach a label |
+| GET    | `/api/tokens`           | List my API tokens (never the secret) |
+| POST   | `/api/tokens`           | Mint a token — returns the raw secret **once** |
+| DELETE | `/api/tokens/:id`       | Revoke a token |
 | GET    | `/api/dashboard`        | Summary, charts, deadlines, activity |
+
+`GET /api/tasks` deadline filters: `?due=overdue` · `?due=today` · `?due=none`
 
 ### Example
 
@@ -88,6 +134,20 @@ curl -c jar.txt -X POST http://localhost:3000/api/auth/login \
 curl -b jar.txt http://localhost:3000/api/dashboard
 ```
 
+### 🔑 API tokens
+
+```bash
+# Mint a token (once — the secret is never shown again)
+curl -b jar.txt -X POST http://localhost:3000/api/tokens \
+  -H "Content-Type: application/json" -d '{"name":"my script"}'
+
+# Use it from anywhere, no cookie needed
+curl -H "Authorization: Bearer tf_..." http://localhost:3000/api/tasks
+```
+
+Only the SHA-256 hash of the token is stored server-side — the database is
+useless to an attacker who exfiltrates it.
+
 ## 🏗 Architecture
 
 ```
@@ -95,17 +155,23 @@ taskflow/
 ├── server/
 │   ├── index.js            # Express app: API → static → SPA fallback
 │   ├── db.js               # SQLite connection + schema (migrations-on-boot)
-│   ├── seed.js             # Demo data generator
+│   ├── seed.js             # Demo data generator (projects, tasks, labels)
 │   ├── middleware/
-│   │   └── auth.js         # Sessions, cookies, requireAuth guard
+│   │   └── auth.js         # Sessions, cookies, requireAuth (cookie or bearer)
 │   └── routes/
-│       ├── auth.js         # Register / login / logout / me
+│       ├── auth.js         # Register / login / logout / me (+ rate limiting)
 │       ├── projects.js     # Project CRUD + stats
 │       ├── tasks.js        # Task CRUD + filters + ownership checks
+│       ├── labels.js       # Label CRUD + task attach/detach (junction table)
+│       ├── tokens.js       # Personal access tokens (hash-only storage)
 │       └── dashboard.js    # Aggregated stats in one round trip
 ├── public/                 # Frontend SPA (index.html, styles.css, app.js)
-└── tests/
-    └── api.test.js         # Integration tests (node --test)
+├── tests/
+│   └── api.test.js         # 31 integration tests (node --test)
+├── docs/                   # README screenshots
+├── .github/workflows/
+│   └── ci.yml              # CI: npm ci + tests + coverage (Node 18 & 20)
+└── Dockerfile              # Multi-stage production image
 ```
 
 **Key design decisions**
@@ -113,14 +179,35 @@ taskflow/
 - **Layered ownership checks** — every task operation joins back to the owning user, so one user can never touch another's data, even by guessing IDs.
 - **Zero-config database** — SQLite file in `/data` (git-ignored); tests run against `:memory:`.
 - **One round-trip dashboard** — six aggregate queries composed server-side so the UI renders instantly.
-- **Minimal dependencies** — 3 runtime deps total; charts are hand-built SVG/CSS.
+- **Honest secrets** — passwords are bcrypt-hashed, session tokens are opaque randoms, API tokens are stored as SHA-256 hashes and shown exactly once.
+- **Pragmatic dependencies** — 4 runtime deps total; charts and drag-and-drop are hand-built with SVG/CSS and native HTML5.
+
+## 🧪 Testing & coverage
+
+```bash
+npm test          # 31 tests, ~2s
+npm run coverage  # same tests under c8
+```
+
+```
+-------------------|---------|----------|---------|---------|
+File               | % Stmts | % Branch | % Funcs | % Lines |
+-------------------|---------|----------|---------|---------|
+All files          |   91.35 |    73.61 |     100 |   91.35 |
+-------------------|---------|----------|---------|---------|
+```
+
+CI runs the suite on every push and pull request against Node 18 **and** Node 20.
 
 ## 🗺 Roadmap
 
-- [ ] Drag & drop between statuses
+- [x] Drag & drop between statuses
+- [x] REST API tokens for third-party access
+- [x] Labels / tags on tasks
+- [x] Deadline filters and overdue highlighting
+- [x] CI + coverage reporting
 - [ ] Due-date reminders and email notifications
 - [ ] Team workspaces and task assignment
-- [ ] REST API tokens for third-party access
 - [ ] PWA offline support
 
 ## 📄 License

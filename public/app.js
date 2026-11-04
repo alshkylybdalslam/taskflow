@@ -26,9 +26,45 @@ const state = {
   projects: [],
   tasks: [],
   route: { name: 'dashboard', id: null },
-  filters: { project: 'all', status: 'all', priority: 'all', q: '' },
+  filters: { project: 'all', status: 'all', priority: 'all', due: 'all', label: 'all', q: '' },
   color: '#4f46e5',
+  boardView: (() => {
+    try { return localStorage.getItem('tf-view') === 'board'; } catch { return false; }
+  })(),
+  labelsByProject: {}, // { projectId: [labels] } — lazily fetched, invalidated on change
+  allLabels: null,     // flat list for the tasks-page filter
+  labelFormOpen: false,
+  labelColor: '#6366f1',
 };
+
+const LABEL_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+
+/* ---------------- label data ---------------- */
+
+async function getProjectLabels(pid) {
+  if (!state.labelsByProject[pid]) {
+    const { labels } = await api(`/projects/${pid}/labels`);
+    state.labelsByProject[pid] = labels;
+  }
+  return state.labelsByProject[pid];
+}
+
+function invalidateLabels(pid) {
+  if (pid) delete state.labelsByProject[pid];
+  state.allLabels = null;
+}
+
+async function getAllLabels() {
+  if (!state.allLabels) {
+    const { labels } = await api('/labels');
+    state.allLabels = labels;
+  }
+  return state.allLabels;
+}
+
+function labelChipHTML(l) {
+  return `<span class="label-chip" style="--lc:${esc(l.color)}">${esc(l.name)}</span>`;
+}
 
 /* ---------------- API helper ---------------- */
 
@@ -484,6 +520,7 @@ async function renderDashboard() {
 function taskRowHTML(t) {
   const due = fmtDue(t.due_date);
   const done = t.status === 'done';
+  const labelChips = (t.labels || []).map(labelChipHTML).join('');
   return `
     <div class="task-row ${done ? 'done' : ''}" data-task="${t.id}">
       <button class="task-check ${done ? 'checked' : ''}" data-toggle="${t.id}" title="${done ? 'Mark as not done' : 'Mark as done'}">✓</button>
@@ -493,6 +530,7 @@ function taskRowHTML(t) {
           <span class="project-tag"><i style="background:${t.project_color}"></i>${esc(t.project_name)}</span>
           <span>·</span>
           <span class="prio-dot ${t.priority}"></span> ${PRIORITY_LABEL[t.priority]}
+          ${labelChips}
           ${t.description ? `<span>· ${esc(t.description.slice(0, 60))}${t.description.length > 60 ? '…' : ''}</span>` : ''}
         </div>
       </div>
@@ -507,10 +545,13 @@ function taskRowHTML(t) {
 
 async function renderTasks() {
   const f = state.filters;
+  const allLabels = await getAllLabels();
   const query = new URLSearchParams();
   if (f.project !== 'all') query.set('project_id', f.project);
   if (f.status !== 'all') query.set('status', f.status);
   if (f.priority !== 'all') query.set('priority', f.priority);
+  if (f.due !== 'all') query.set('due', f.due);
+  if (f.label !== 'all') query.set('label_id', f.label);
   if (f.q) query.set('q', f.q);
 
   const { tasks } = await api(`/tasks${query.toString() ? `?${query}` : ''}`);
@@ -520,7 +561,16 @@ async function renderTasks() {
     .map((p) => `<option value="${p.id}" ${f.project === String(p.id) ? 'selected' : ''}>${esc(p.name)}</option>`)
     .join('');
 
-  const active = f.project !== 'all' || f.status !== 'all' || f.priority !== 'all' || f.q;
+  const labelOptions = allLabels
+    .map(
+      (l) =>
+        `<option value="${l.id}" ${f.label === String(l.id) ? 'selected' : ''}>${esc(l.project_name)} · ${esc(l.name)}</option>`
+    )
+    .join('');
+
+  const active =
+    f.project !== 'all' || f.status !== 'all' || f.priority !== 'all' ||
+    f.due !== 'all' || f.label !== 'all' || f.q;
 
   $('#view').innerHTML = `
     <div class="filters">
@@ -539,6 +589,16 @@ async function renderTasks() {
         <option value="high" ${f.priority === 'high' ? 'selected' : ''}>High</option>
         <option value="medium" ${f.priority === 'medium' ? 'selected' : ''}>Medium</option>
         <option value="low" ${f.priority === 'low' ? 'selected' : ''}>Low</option>
+      </select>
+      <select data-filter="due">
+        <option value="all">Any deadline</option>
+        <option value="overdue" ${f.due === 'overdue' ? 'selected' : ''}>⚠ Overdue</option>
+        <option value="today" ${f.due === 'today' ? 'selected' : ''}>Due today</option>
+        <option value="none" ${f.due === 'none' ? 'selected' : ''}>No due date</option>
+      </select>
+      <select data-filter="label">
+        <option value="all">Any label</option>
+        ${labelOptions}
       </select>
       ${active ? '<button class="btn" data-action="clear-filters">Clear</button>' : ''}
       <span class="spacer"></span>
@@ -603,11 +663,57 @@ function renderProjects() {
     </div>`;
 }
 
+/* ============================================================
+   KANBAN BOARD (project detail — list/board toggle, HTML5 DnD)
+   ============================================================ */
+
+const BOARD_COLS = [
+  ['todo', 'To do'],
+  ['in_progress', 'In progress'],
+  ['done', 'Done'],
+];
+
+function kcardHTML(t) {
+  const due = fmtDue(t.due_date);
+  return `
+    <article class="kcard ${t.status === 'done' ? 'done' : ''}" draggable="true" data-task="${t.id}">
+      <div class="kcard-title">${esc(t.title)}</div>
+      <div class="kcard-meta">
+        <span class="prio-dot ${t.priority}" title="${PRIORITY_LABEL[t.priority]} priority"></span>
+        ${due.text ? `<span class="task-due ${due.cls}">${due.text}</span>` : ''}
+      </div>
+      ${t.labels && t.labels.length
+        ? `<div class="kcard-labels">${t.labels.map(labelChipHTML).join('')}</div>`
+        : ''}
+    </article>`;
+}
+
+function boardHTML(tasks) {
+  return `
+    <div class="board">
+      ${BOARD_COLS.map(([key, name]) => {
+        const items = tasks.filter((t) => t.status === key);
+        return `
+          <section class="board-col">
+            <header>
+              <span class="col-dot ${key}"></span>
+              ${name}
+              <span class="count">${items.length}</span>
+            </header>
+            <div class="col-body" data-drop="${key}">
+              ${items.map(kcardHTML).join('') || '<p class="col-empty">Drag a task here</p>'}
+            </div>
+          </section>`;
+      }).join('')}
+    </div>`;
+}
+
 async function renderProjectDetail() {
   const id = state.route.id;
-  const [{ project }, { tasks }] = await Promise.all([
+  const [{ project }, { tasks }, { labels }] = await Promise.all([
     api(`/projects/${id}`),
     api(`/tasks?project_id=${id}`),
+    api(`/projects/${id}/labels`),
   ]);
 
   if (!project) {
@@ -622,11 +728,63 @@ async function renderProjectDetail() {
   }
 
   state.tasks = tasks;
+  state.labelsByProject[id] = labels;
   setTitle(project.name, project.description || 'Project detail');
 
   const pct = project.total_tasks
     ? Math.round((project.done_tasks / project.total_tasks) * 100)
     : 0;
+
+  const viewToggle = tasks.length
+    ? `<div class="view-toggle" role="group" aria-label="View mode">
+         <button type="button" data-action="view-list" class="${state.boardView ? '' : 'active'}" title="List view">☰ List</button>
+         <button type="button" data-action="view-board" class="${state.boardView ? 'active' : ''}" title="Board view">▦ Board</button>
+       </div>`
+    : '';
+
+  const labelStrip = `
+    <div class="label-strip">
+      ${labels
+        .map(
+          (l) => `
+        <span class="label-chip has-x" style="--lc:${esc(l.color)}">
+          ${esc(l.name)}
+          <button type="button" data-del-label="${l.id}" title="Delete label">×</button>
+        </span>`
+        )
+        .join('')}
+      <button type="button" class="label-add-btn" data-action="toggle-label-form">
+        ${state.labelFormOpen ? '× Cancel' : '+ Label'}
+      </button>
+      ${
+        state.labelFormOpen
+          ? `<form class="label-form" id="labelForm" data-project="${id}">
+               <input name="name" placeholder="Label name…" maxlength="30" autocomplete="off" required>
+               <div class="label-colors">
+                 ${LABEL_COLORS.map(
+                   (c) =>
+                     `<button type="button" class="lswatch ${state.labelColor === c ? 'active' : ''}" data-lcolor="${c}" style="--c:${c}" title="${c}"></button>`
+                 ).join('')}
+               </div>
+               <button class="btn btn-primary btn-sm" type="submit">Add label</button>
+             </form>`
+          : ''
+      }
+    </div>`;
+
+  let content;
+  if (tasks.length && state.boardView) {
+    content = boardHTML(tasks);
+  } else if (tasks.length) {
+    content = `<div class="task-list">${tasks.map(taskRowHTML).join('')}</div>`;
+  } else {
+    content = `<div class="empty">
+                 <span class="emoji">✨</span>
+                 <h3>No tasks in this project</h3>
+                 <p>Add the first task and start making progress.</p>
+                 <button class="btn btn-primary" data-action="new-task" data-project="${project.id}">+ Add a task</button>
+               </div>`;
+  }
 
   $('#view').innerHTML = `
     <a class="back-link" href="#/projects">← All projects</a>
@@ -641,28 +799,20 @@ async function renderProjectDetail() {
           ${project.overdue_tasks ? `<span class="meta-pill warn">${project.overdue_tasks} overdue</span>` : ''}
         </div>
       </div>
-      <div style="display:flex;gap:.6rem;align-items:center">
+      <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
         <div style="width:130px">
           <div class="progress-row">
             <div class="progress" style="--pc:${project.color}"><i style="width:${pct}%"></i></div>
             <span class="pct">${pct}%</span>
           </div>
         </div>
+        ${viewToggle}
         <button class="btn" data-action="edit-project" data-id="${project.id}">Edit</button>
         <button class="btn btn-primary" data-action="new-task" data-project="${project.id}">+ Task</button>
       </div>
     </div>
-
-    ${
-      tasks.length
-        ? `<div class="task-list">${tasks.map(taskRowHTML).join('')}</div>`
-        : `<div class="empty">
-             <span class="emoji">✨</span>
-             <h3>No tasks in this project</h3>
-             <p>Add the first task and start making progress.</p>
-             <button class="btn btn-primary" data-action="new-task" data-project="${project.id}">+ Add a task</button>
-           </div>`
-    }`;
+    ${labelStrip}
+    ${content}`;
 }
 
 /* ============================================================
@@ -679,7 +829,35 @@ function closeModal(id) {
   document.body.style.overflow = '';
 }
 
-function openTaskModal(task = null, defaultProjectId = null) {
+/** Render the label checkboxes inside the task modal for a given project. */
+async function renderLabelPicker(projectId, task = null) {
+  const box = $('#taskLabelPicker');
+  if (!box) return;
+  let labels = [];
+  try {
+    labels = projectId ? await getProjectLabels(projectId) : [];
+  } catch {
+    labels = [];
+  }
+
+  if (!labels.length) {
+    box.innerHTML =
+      '<p class="label-empty">No labels in this project yet — add some from the project page.</p>';
+    return;
+  }
+  const chosen = new Set((task && task.labels ? task.labels : []).map((l) => l.id));
+  box.innerHTML = labels
+    .map(
+      (l) => `
+      <label class="lpick">
+        <input type="checkbox" name="label_ids" value="${l.id}" ${chosen.has(l.id) ? 'checked' : ''}>
+        ${labelChipHTML(l)}
+      </label>`
+    )
+    .join('');
+}
+
+async function openTaskModal(task = null, defaultProjectId = null) {
   if (!state.projects.length) {
     toast('Create a project first — tasks live inside projects.', 'err');
     openProjectModal();
@@ -704,11 +882,21 @@ function openTaskModal(task = null, defaultProjectId = null) {
   form.elements.status.value = task ? task.status : 'todo';
   form.elements.priority.value = task ? task.priority : 'medium';
   form.elements.due_date.value = task && task.due_date ? task.due_date : '';
+
+  await renderLabelPicker(Number(form.elements.project_id.value), task);
+
   $('#deleteTaskBtn').hidden = !task;
 
   openModal('taskModal');
   form.elements.title.focus();
 }
+
+/* Re-render the label picker when the project changes. */
+$('#taskForm').addEventListener('change', (e) => {
+  if (e.target.name === 'project_id') {
+    renderLabelPicker(Number(e.target.value), null);
+  }
+});
 
 $('#taskForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -724,6 +912,7 @@ $('#taskForm').addEventListener('submit', async (e) => {
     status: form.elements.status.value,
     priority: form.elements.priority.value,
     due_date: form.elements.due_date.value || null,
+    label_ids: $$('#taskLabelPicker input:checked').map((i) => Number(i.value)),
   };
 
   btn.disabled = true;
@@ -820,6 +1009,7 @@ $('#deleteProjectBtn').addEventListener('click', async () => {
   if (!confirm('Delete this project and ALL of its tasks? This cannot be undone.')) return;
   try {
     await api(`/projects/${id}`, { method: 'DELETE' });
+    invalidateLabels(Number(id));
     closeModal('projectModal');
     toast('Project deleted');
     if (state.route.name === 'project' && state.route.id === Number(id)) {
@@ -864,7 +1054,7 @@ async function deleteTask(id) {
   }
 }
 
-$('#view').addEventListener('click', (e) => {
+$('#view').addEventListener('click', async (e) => {
   const toggle = e.target.closest('[data-toggle]');
   if (toggle) { e.stopPropagation(); toggleTask(toggle.dataset.toggle); return; }
 
@@ -879,6 +1069,30 @@ $('#view').addEventListener('click', (e) => {
   const del = e.target.closest('[data-del]');
   if (del) { e.stopPropagation(); deleteTask(del.dataset.del); return; }
 
+  const delLabel = e.target.closest('[data-del-label]');
+  if (delLabel) {
+    e.stopPropagation();
+    if (!confirm('Delete this label? It will be removed from every task in the project.')) return;
+    const pid = state.route.id;
+    try {
+      await api(`/labels/${delLabel.dataset.delLabel}`, { method: 'DELETE' });
+      invalidateLabels(pid);
+      toast('Label deleted');
+      await refresh();
+    } catch (err) {
+      toast(err.message, 'err');
+    }
+    return;
+  }
+
+  const lcolor = e.target.closest('[data-lcolor]');
+  if (lcolor) {
+    e.stopPropagation();
+    state.labelColor = lcolor.dataset.lcolor;
+    $$('#labelForm .lswatch').forEach((s) => s.classList.toggle('active', s === lcolor));
+    return;
+  }
+
   const openProject = e.target.closest('[data-open-project]');
   if (openProject) { location.hash = `#/projects/${openProject.dataset.openProject}`; return; }
 
@@ -890,8 +1104,17 @@ $('#view').addEventListener('click', (e) => {
     else if (kind === 'edit-project') {
       const p = state.projects.find((x) => x.id === Number(action.dataset.id));
       if (p) openProjectModal(p);
+    } else if (kind === 'view-list' || kind === 'view-board') {
+      state.boardView = kind === 'view-board';
+      try { localStorage.setItem('tf-view', state.boardView ? 'board' : 'list'); } catch { /* ignore */ }
+      renderRoute({ silent: true });
+    } else if (kind === 'toggle-label-form') {
+      state.labelFormOpen = !state.labelFormOpen;
+      state.labelColor = '#6366f1';
+      renderRoute({ silent: true });
+      if (state.labelFormOpen) setTimeout(() => $('#labelForm input')?.focus(), 0);
     } else if (kind === 'clear-filters') {
-      state.filters = { project: 'all', status: 'all', priority: 'all', q: '' };
+      state.filters = { project: 'all', status: 'all', priority: 'all', due: 'all', label: 'all', q: '' };
       $('#globalSearch').value = '';
       renderRoute({ silent: true });
     } else if (kind === 'go-tasks') {
@@ -900,10 +1123,81 @@ $('#view').addEventListener('click', (e) => {
     return;
   }
 
-  const row = e.target.closest('.task-row');
+  const row = e.target.closest('.task-row, .kcard');
   if (row) {
     const task = state.tasks.find((t) => t.id === Number(row.dataset.task));
     if (task) openTaskModal(task);
+  }
+});
+
+/* Inline "add label" form on the project page */
+$('#view').addEventListener('submit', async (e) => {
+  const form = e.target.closest('#labelForm');
+  if (!form) return;
+  e.preventDefault();
+  const pid = Number(form.dataset.project);
+  try {
+    await api(`/projects/${pid}/labels`, {
+      method: 'POST',
+      body: { name: form.elements.name.value, color: state.labelColor },
+    });
+    invalidateLabels(pid);
+    state.labelFormOpen = false;
+    state.labelColor = '#6366f1';
+    toast('Label created');
+    await refresh();
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
+
+/* ============================================================
+   KANBAN DRAG & DROP (native HTML5 — no libraries)
+   ============================================================ */
+
+let dragTaskId = null;
+
+$('#view').addEventListener('dragstart', (e) => {
+  const card = e.target.closest('.kcard');
+  if (!card) return;
+  dragTaskId = Number(card.dataset.task);
+  card.classList.add('dragging');
+  e.dataTransfer.effectAllowed = 'move';
+  e.dataTransfer.setData('text/plain', card.dataset.task);
+});
+
+$('#view').addEventListener('dragend', (e) => {
+  const card = e.target.closest('.kcard');
+  if (card) card.classList.remove('dragging');
+  $$('.col-body').forEach((b) => b.classList.remove('drop-hot'));
+  dragTaskId = null;
+});
+
+$('#view').addEventListener('dragover', (e) => {
+  const body = e.target.closest('[data-drop]');
+  if (!body || dragTaskId === null) return;
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  $$('.col-body').forEach((b) => b.classList.toggle('drop-hot', b === body));
+});
+
+$('#view').addEventListener('drop', async (e) => {
+  const body = e.target.closest('[data-drop]');
+  if (!body) return;
+  e.preventDefault();
+  const id = Number(e.dataTransfer.getData('text/plain')) || dragTaskId;
+  const status = body.dataset.drop;
+  $$('.col-body').forEach((b) => b.classList.remove('drop-hot'));
+  dragTaskId = null;
+
+  const task = state.tasks.find((t) => t.id === id);
+  if (!task || task.status === status) return;
+  try {
+    await api(`/tasks/${id}`, { method: 'PUT', body: { status } });
+    toast(status === 'done' ? 'Nice — one less thing to worry about!' : `Moved to ${STATUS_LABEL[status]}`);
+    await refresh();
+  } catch (err) {
+    toast(err.message, 'err');
   }
 });
 

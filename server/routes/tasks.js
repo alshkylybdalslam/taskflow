@@ -3,11 +3,13 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { labelsFor } = require('./labels');
 
 const router = express.Router();
 const STATUSES = ['todo', 'in_progress', 'done'];
 const PRIORITIES = ['low', 'medium', 'high'];
 const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const DUE_FILTERS = ['overdue', 'today', 'none'];
 
 router.use(requireAuth);
 
@@ -21,6 +23,17 @@ function findTask(id) {
         WHERE t.id = ?`
     )
     .get(id);
+}
+
+/** Attach a `labels` array to a (list of) task(s) in one extra query. */
+function withLabels(tasks) {
+  const list = Array.isArray(tasks) ? tasks : [tasks];
+  const ids = list.filter(Boolean).map((t) => t.id);
+  const map = labelsFor(ids);
+  for (const t of list) {
+    if (t) t.labels = map.get(t.id) || [];
+  }
+  return Array.isArray(tasks) ? tasks : tasks;
 }
 
 function ownedProjectId(userId, projectId) {
@@ -48,16 +61,40 @@ function validateTask(body, { partial = false } = {}) {
   if (project_id !== undefined && !Number.isInteger(Number(project_id))) {
     return 'Invalid project.';
   }
+  if (body.label_ids !== undefined) {
+    if (!Array.isArray(body.label_ids) || body.label_ids.some((n) => !Number.isInteger(Number(n)))) {
+      return 'label_ids must be an array of label ids.';
+    }
+  }
+  return null;
+}
+
+/** Replace a task's label assignments. Returns an error string, or null. */
+function setTaskLabels(taskId, projectId, labelIds) {
+  const ids = [...new Set(labelIds.map(Number))];
+  // Validate every label BEFORE touching the junction table.
+  for (const id of ids) {
+    const label = db.prepare('SELECT project_id FROM labels WHERE id = ?').get(id);
+    if (!label || label.project_id !== projectId) {
+      return 'One of those labels belongs to another project.';
+    }
+  }
+  const wipe = db.prepare('DELETE FROM task_labels WHERE task_id = ?');
+  const link = db.prepare('INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?, ?)');
+  db.transaction(() => {
+    wipe.run(taskId);
+    for (const id of ids) link.run(taskId, id);
+  })();
   return null;
 }
 
 /**
  * GET /api/tasks
- * Filters: ?project_id= &status= &priority= &q= (search)
+ * Filters: ?project_id= &status= &priority= &q= &label_id= &due=(overdue|today|none)
  * Order: open work first, soonest due date first.
  */
 router.get('/', (req, res) => {
-  const { project_id, status, priority, q } = req.query;
+  const { project_id, status, priority, q, label_id, due } = req.query;
 
   const where = ['p.user_id = ?'];
   const params = [req.user.id];
@@ -78,6 +115,17 @@ router.get('/', (req, res) => {
     where.push('(t.title LIKE ? OR t.description LIKE ?)');
     params.push(`%${q}%`, `%${q}%`);
   }
+  if (label_id && Number.isInteger(Number(label_id))) {
+    where.push('EXISTS (SELECT 1 FROM task_labels tl WHERE tl.task_id = t.id AND tl.label_id = ?)');
+    params.push(Number(label_id));
+  }
+  if (due === 'overdue') {
+    where.push("t.due_date < date('now') AND t.status != 'done'");
+  } else if (due === 'today') {
+    where.push("t.due_date = date('now')");
+  } else if (due === 'none') {
+    where.push('t.due_date IS NULL');
+  }
 
   const tasks = db
     .prepare(
@@ -94,7 +142,7 @@ router.get('/', (req, res) => {
     )
     .all(...params);
 
-  res.json({ tasks });
+  res.json({ tasks: withLabels(tasks) });
 });
 
 /** POST /api/tasks — create a task */
@@ -121,7 +169,16 @@ router.post('/', (req, res) => {
       (body.status || 'todo') === 'done' ? new Date().toISOString() : null
     );
 
-  res.status(201).json({ task: findTask(result.lastInsertRowid) });
+  const taskId = result.lastInsertRowid;
+  if (Array.isArray(body.label_ids) && body.label_ids.length) {
+    const labelError = setTaskLabels(taskId, projectId, body.label_ids);
+    if (labelError) {
+      db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
+      return res.status(400).json({ error: labelError });
+    }
+  }
+
+  res.status(201).json({ task: withLabels(findTask(taskId)) });
 });
 
 /** PUT /api/tasks/:id — partial update of a task */
@@ -167,7 +224,12 @@ router.put('/:id', (req, res) => {
     req.user.id
   );
 
-  res.json({ task: findTask(task.id) });
+  if (body.label_ids !== undefined) {
+    const labelError = setTaskLabels(task.id, projectId, body.label_ids);
+    if (labelError) return res.status(400).json({ error: labelError });
+  }
+
+  res.json({ task: withLabels(findTask(task.id)) });
 });
 
 /** DELETE /api/tasks/:id */

@@ -60,11 +60,41 @@ db.exec(`
     completed_at TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS labels (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name       TEXT    NOT NULL,
+    color      TEXT    NOT NULL DEFAULT '#6366f1',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (project_id, name)
+  );
+
+  -- Many-to-many: tasks <-> labels
+  CREATE TABLE IF NOT EXISTS task_labels (
+    task_id  INTEGER NOT NULL REFERENCES tasks(id)  ON DELETE CASCADE,
+    label_id INTEGER NOT NULL REFERENCES labels(id) ON DELETE CASCADE,
+    PRIMARY KEY (task_id, label_id)
+  );
+
+  -- Personal access tokens: only the SHA-256 hash is stored, never the raw value.
+  CREATE TABLE IF NOT EXISTS api_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id      INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name         TEXT    NOT NULL,
+    token_hash   TEXT    NOT NULL UNIQUE,
+    prefix       TEXT    NOT NULL,
+    created_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_used_at TEXT
+  );
+
   CREATE INDEX IF NOT EXISTS idx_sessions_user   ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_projects_user   ON projects(user_id);
   CREATE INDEX IF NOT EXISTS idx_tasks_project   ON tasks(project_id);
   CREATE INDEX IF NOT EXISTS idx_tasks_status    ON tasks(status);
   CREATE INDEX IF NOT EXISTS idx_tasks_due_date  ON tasks(due_date);
+  CREATE INDEX IF NOT EXISTS idx_labels_project  ON labels(project_id);
+  CREATE INDEX IF NOT EXISTS idx_task_labels_l   ON task_labels(label_id);
+  CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
 `);
 
 module.exports = db;

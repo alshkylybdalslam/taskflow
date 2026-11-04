@@ -13,6 +13,9 @@ data/
 *.log
 npm-debug.log*
 
+# Test coverage output
+coverage/
+
 # Editors / OS
 .vscode/
 .DS_Store

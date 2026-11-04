@@ -2,6 +2,7 @@
 
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const rateLimit = require('express-rate-limit');
 const db = require('../db');
 const {
   startSession,
@@ -13,12 +14,25 @@ const {
 const router = express.Router();
 const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
+/**
+ * Brute-force protection for credential endpoints: a sliding window of
+ * attempts per IP address. Tunable via env (used by tests and ops):
+ *   AUTH_RATE_LIMIT_MAX=30  AUTH_RATE_LIMIT_WINDOW_MS=900000
+ */
+const authLimiter = rateLimit({
+  windowMs: Number(process.env.AUTH_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  limit: Number(process.env.AUTH_RATE_LIMIT_MAX) || 30,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many attempts — please wait a few minutes and try again.' },
+});
+
 function publicUser(user) {
   return { id: user.id, name: user.name, email: user.email };
 }
 
 /** POST /api/auth/register — create an account and start a session */
-router.post('/register', (req, res) => {
+router.post('/register', authLimiter, (req, res) => {
   const { name, email, password } = req.body || {};
 
   if (typeof name !== 'string' || name.trim().length < 2) {
@@ -48,7 +62,7 @@ router.post('/register', (req, res) => {
 });
 
 /** POST /api/auth/login — verify credentials and start a session */
-router.post('/login', (req, res) => {
+router.post('/login', authLimiter, (req, res) => {
   const { email, password } = req.body || {};
 
   if (typeof email !== 'string' || typeof password !== 'string') {
