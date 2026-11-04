@@ -7,8 +7,8 @@
     "start": "node server/index.js",
     "dev": "node --watch server/index.js",
     "seed": "node server/seed.js",
-    "test": "node --test tests/",
-    "coverage": "c8 --reporter=text --reporter=lcov node --test tests/"
+    "test": "node --test",
+    "coverage": "c8 --reporter=text --reporter=lcov node --test"
   },
   "engines": {
     "node": ">=18"
