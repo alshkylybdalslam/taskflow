@@ -8,7 +8,7 @@ Projects, tasks, labels, deadlines, a drag-and-drop kanban board and a dashboard
 that tells you exactly where you stand.
 
 [![CI](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-91.35%25-brightgreen.svg)](#-testing--coverage)
+[![Coverage](https://img.shields.io/badge/coverage-96.30%25-brightgreen.svg)](#-testing--coverage)
 [![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x%20%7C%2022.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
@@ -20,7 +20,8 @@ that tells you exactly where you stand.
 
 ## ✨ Features
 
-- **🔐 Accounts & sessions** — register/login with bcrypt password hashing, httpOnly session cookies and **rate-limited** credential endpoints (brute-force protection)
+- **🔐 Accounts & sessions** — register/login with bcrypt password hashing, hardened httpOnly session cookies (`SameSite=Lax`, `Path=/`, `Secure` over HTTPS) and **rate-limited** credential endpoints (brute-force protection)
+- **🛡 Security hardening** — `helmet` with a strict Content-Security-Policy (`script-src 'self'`), HSTS, MIME-sniffing/referrer protections, a 64 KB JSON body limit (413 on overflow) and a global per-IP rate limit
 - **📁 Projects** — create colour-coded projects with live progress tracking
 - **✔ Tasks** — status (`To do → In progress → Done`), priority, due dates, descriptions
 - **🗂 Kanban board** — drag & drop tasks between columns (native HTML5 DnD, zero libraries), with a List ⇄ Board toggle remembered across visits
@@ -29,9 +30,10 @@ that tells you exactly where you stand.
 - **🔎 Filtering & search** — by project, status, priority, deadline, label, or free-text search
 - **📊 Dashboard** — status donut, 7-day completion trend, per-project progress, upcoming deadlines and overdue alerts — all in a single API round trip
 - **🔑 API tokens** — personal access tokens (`Bearer tf_…`) for scripted access; only the SHA-256 hash is stored, the secret is shown exactly once
+- **📖 Interactive API docs** — OpenAPI 3.0.3 spec with Swagger UI at [`/api/docs`](http://localhost:3000/api/docs); machine-readable spec at `/api/docs.json`
 - **🌗 Dark mode** — one-click theme toggle, persisted in `localStorage` and applied before first paint (no flash)
 - **📱 Responsive UI** — polished single-page frontend with modals, toasts and empty states
-- **🧪 Tested** — 31 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines and rate limiting
+- **🧪 Tested** — 37 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, rate limiting, security headers and the API docs
 
 ## 📸 Screenshots
 
@@ -54,9 +56,11 @@ that tells you exactly where you stand.
 | Backend    | Node.js, Express 4 |
 | Database   | SQLite via `better-sqlite3` (WAL mode, foreign keys) |
 | Auth       | bcryptjs password hashing, opaque session tokens in httpOnly cookies, bearer API tokens, `express-rate-limit` on auth endpoints |
+| Security   | `helmet` (strict CSP, HSTS, no-sniff…), global rate limiter, 64 KB JSON body limit, `Secure` cookies behind HTTPS |
+| API docs   | OpenAPI 3.0.3 + Swagger UI (`swagger-ui-express`) at `/api/docs` |
 | Frontend   | Vanilla JS SPA, hand-rolled SVG/CSS charts (no framework, no chart library) |
-| Testing    | Node built-in test runner (`node --test`) + `fetch`, coverage via `c8` |
-| Delivery   | GitHub Actions CI (Node 18 + 20), multi-stage Dockerfile |
+| Testing    | Node built-in test runner (`node --test`) + `fetch`, coverage via Node's built-in test coverage |
+| Delivery   | GitHub Actions CI (Node 18, 20 & 22), multi-stage Dockerfile |
 
 ## 🚀 Quick start
 
@@ -88,13 +92,19 @@ rebuilds. A built-in `HEALTHCHECK` keeps `docker ps` honest.
 | `npm run dev`        | Start with auto-reload on file changes |
 | `npm run seed`       | Load demo projects, tasks & labels (`-- --force` to reset) |
 | `npm test`           | Run the integration test suite |
-| `npm run coverage`   | Run the tests under `c8` and print a coverage table (also writes `lcov`) |
+| `npm run coverage`   | Run the tests with Node's built-in coverage and print a table |
 
 ## 🔌 API overview
 
 All endpoints are JSON. Protected routes accept **either** a session cookie
 (browser) **or** `Authorization: Bearer tf_…` (scripts) — see
 [API tokens](#-api-tokens).
+
+> **📖 Interactive documentation:** open **[`/api/docs`](http://localhost:3000/api/docs)**
+> for the full Swagger UI, or grab the raw OpenAPI 3.0.3 document at
+> **`/api/docs.json`**.
+
+<img src="docs/api-docs.png" alt="Interactive Swagger UI at /api/docs" width="100%">
 
 | Method | Endpoint                | Description |
 |--------|-------------------------|-------------|
@@ -153,9 +163,10 @@ useless to an attacker who exfiltrates it.
 ```
 taskflow/
 ├── server/
-│   ├── index.js            # Express app: API → static → SPA fallback
+│   ├── index.js            # Express app: security middleware → API → docs → static → SPA
 │   ├── db.js               # SQLite connection + schema (migrations-on-boot)
 │   ├── seed.js             # Demo data generator (projects, tasks, labels)
+│   ├── openapi.js          # OpenAPI 3.0.3 spec (served at /api/docs.json)
 │   ├── middleware/
 │   │   └── auth.js         # Sessions, cookies, requireAuth (cookie or bearer)
 │   └── routes/
@@ -165,12 +176,12 @@ taskflow/
 │       ├── labels.js       # Label CRUD + task attach/detach (junction table)
 │       ├── tokens.js       # Personal access tokens (hash-only storage)
 │       └── dashboard.js    # Aggregated stats in one round trip
-├── public/                 # Frontend SPA (index.html, styles.css, app.js)
+├── public/                 # Frontend SPA (index.html, styles.css, app.js, theme.js)
 ├── tests/
-│   └── api.test.js         # 31 integration tests (node --test)
+│   └── api.test.js         # 37 integration tests (node --test)
 ├── docs/                   # README screenshots
 ├── .github/workflows/
-│   └── ci.yml              # CI: npm ci + tests + coverage (Node 18 & 20)
+│   └── ci.yml              # CI: npm ci + tests + coverage (Node 18, 20 & 22)
 └── Dockerfile              # Multi-stage production image
 ```
 
@@ -180,20 +191,21 @@ taskflow/
 - **Zero-config database** — SQLite file in `/data` (git-ignored); tests run against `:memory:`.
 - **One round-trip dashboard** — six aggregate queries composed server-side so the UI renders instantly.
 - **Honest secrets** — passwords are bcrypt-hashed, session tokens are opaque randoms, API tokens are stored as SHA-256 hashes and shown exactly once.
-- **Pragmatic dependencies** — 4 runtime deps total; charts and drag-and-drop are hand-built with SVG/CSS and native HTML5.
+- **Hardened by default** — strict CSP with no inline scripts anywhere, `Secure` cookies behind HTTPS, bounded request bodies and rate limiting at both the app and auth layers.
+- **Pragmatic dependencies** — 6 runtime deps total; charts and drag-and-drop are hand-built with SVG/CSS and native HTML5.
 
 ## 🧪 Testing & coverage
 
 ```bash
-npm test          # 31 tests, ~2s
-npm run coverage  # same tests under c8
+npm test          # 37 tests, ~3s
+npm run coverage  # same tests, built-in V8 coverage table
 ```
 
 ```
 -------------------|---------|----------|---------|---------|
 File               | % Stmts | % Branch | % Funcs | % Lines |
 -------------------|---------|----------|---------|---------|
-All files          |   91.35 |    73.61 |     100 |   91.35 |
+All files          |   96.30 |    78.93 |   93.04 |   96.30 |
 -------------------|---------|----------|---------|---------|
 ```
 
@@ -206,6 +218,8 @@ CI runs the suite on every push and pull request against Node 18, 20 **and** 22.
 - [x] Labels / tags on tasks
 - [x] Deadline filters and overdue highlighting
 - [x] CI + coverage reporting
+- [x] Interactive API documentation (OpenAPI + Swagger UI)
+- [x] Security hardening (CSP, rate limits, body limits, cookie flags)
 - [ ] Due-date reminders and email notifications
 - [ ] Team workspaces and task assignment
 - [ ] PWA offline support

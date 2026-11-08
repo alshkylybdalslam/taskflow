@@ -467,6 +467,87 @@ test('revoking a token revokes access immediately', async () => {
   assert.equal(again.status, 404);
 });
 
+/* ---------------- security hardening & API docs ---------------- */
+
+test('security headers are set on every response', async () => {
+  const page = await req('/');
+  const csp = page.headers.get('content-security-policy') || '';
+  assert.ok(csp.includes("script-src 'self'"), 'CSP must allow only same-origin scripts');
+  assert.ok(csp.includes("script-src-attr 'none'"), 'CSP must block inline event handlers');
+  assert.ok(csp.includes("'unsafe-inline'"), "CSP style-src must allow the app's inline styles");
+  assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
+  assert.ok(page.headers.get('strict-transport-security'), 'HSTS should be set');
+  assert.ok(page.headers.get('referrer-policy'), 'Referrer-Policy should be set');
+  assert.ok(!page.headers.has('x-powered-by'), 'x-powered-by must be disabled');
+
+  // The API itself must carry the same protection headers.
+  const api = await req('/api/projects');
+  assert.equal(api.status, 401);
+  assert.ok(api.headers.get('content-security-policy'));
+});
+
+test('session cookie is hardened (HttpOnly, SameSite, Path, Secure)', async () => {
+  // Note: this consumes one slot of AUTH_RATE_LIMIT_MAX (10) — the
+  // brute-force test below must still be able to trip it.
+  const res = await fetch(`${base}/api/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Security Test',
+      email: `sec-${Date.now()}@example.com`,
+      password: 'super-secret-1',
+    }),
+  });
+  assert.equal(res.status, 201);
+  const raw = res.headers.get('set-cookie') || '';
+  assert.match(raw, /HttpOnly/i, 'cookie must be unreadable from JS');
+  assert.match(raw, /SameSite=Lax/i, 'cookie must be SameSite=Lax');
+  assert.match(raw, /Path=\//i, 'cookie must be scoped to the whole app');
+  assert.ok(!/Secure/i.test(raw), 'Secure must be off over plain HTTP (local tests)');
+});
+
+test('oversized JSON bodies are rejected with 413', async () => {
+  const res = await fetch(`${base}/api/auth/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'a@b.co', password: 'x'.repeat(70000) }),
+  });
+  assert.equal(res.status, 413, 'a >64 KB body must not be buffered');
+  const data = await res.json();
+  assert.match(data.error, /too large/i);
+});
+
+test('OpenAPI spec is served at /api/docs.json', async () => {
+  const { status, data } = await req('/api/docs.json');
+  assert.equal(status, 200);
+  assert.equal(data.openapi, '3.0.3');
+  const operations = Object.values(data.paths).reduce((n, p) => n + Object.keys(p).length, 0);
+  assert.equal(operations, 23, 'the spec must document every endpoint');
+  assert.ok(data.components.securitySchemes.cookieAuth, 'cookie auth documented');
+  assert.ok(data.components.securitySchemes.bearerAuth, 'bearer token auth documented');
+});
+
+test('interactive Swagger UI is served at /api/docs', async () => {
+  const res = await fetch(`${base}/api/docs`);
+  assert.equal(res.status, 200);
+  const html = await res.text();
+  assert.ok(html.includes('swagger-ui'), 'docs page must render Swagger UI');
+
+  // swagger-ui-express embeds the spec in a generated initializer script
+  // (that's why no inline init script appears in the HTML itself).
+  const init = await fetch(`${base}/api/docs/swagger-ui-init.js`);
+  assert.equal(init.status, 200);
+  const js = await init.text();
+  assert.ok(js.includes('TaskFlow API'), 'initializer must embed our spec');
+});
+
+test('responses carry standard rate-limit headers', async () => {
+  const { headers } = await req('/');
+  const limit = headers.get('ratelimit-limit') || headers.get('ratelimit');
+  assert.ok(limit, 'expected RateLimit-* headers on responses');
+  assert.ok(Number(limit) > 0);
+});
+
 /* ---------------- rate limiting ---------------- */
 
 test('auth endpoints trip the brute-force rate limiter', async () => {

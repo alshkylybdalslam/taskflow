@@ -39,6 +39,9 @@ function startSession(res, userId) {
     httpOnly: true,
     sameSite: 'lax',
     path: '/',
+    // Only meaningful behind HTTPS (Render etc. — trust proxy is set in
+    // index.js); stays off for plain-HTTP local dev and tests.
+    secure: Boolean(res.req && res.req.secure),
     maxAge: SESSION_TTL_MS,
   });
   return token;
