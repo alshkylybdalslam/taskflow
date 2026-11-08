@@ -14,6 +14,11 @@ COPY package.json ./
 COPY server ./server
 COPY public ./public
 
+# Drop root: run as the unprivileged `node` user baked into the base image.
+# It only needs write access to the SQLite data directory.
+RUN mkdir -p /app/data && chown -R node:node /app/data
+USER node
+
 # SQLite file lives here — mount a volume to persist it between containers.
 VOLUME ["/app/data"]
 

@@ -6,3 +6,5 @@ coverage
 docs
 tests
 *.md
+.env
+*.log
