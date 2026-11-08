@@ -164,6 +164,7 @@ async function enterApp(user) {
   $('#userEmail').textContent = user.email;
   $('#userAvatar').textContent = user.name
     .split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+  $('#navAdmin').hidden = user.role !== 'admin';
 
   if (!location.hash || location.hash === '#') {
     history.replaceState(null, '', '#/dashboard');
@@ -260,6 +261,7 @@ function parseRoute() {
   if (parts[0] === 'projects' && parts[1]) return { name: 'project', id: Number(parts[1]) };
   if (parts[0] === 'projects') return { name: 'projects', id: null };
   if (parts[0] === 'tasks') return { name: 'tasks', id: null };
+  if (parts[0] === 'admin') return { name: 'admin', id: null };
   return { name: 'dashboard', id: null };
 }
 
@@ -326,6 +328,9 @@ async function renderRoute({ silent = false } = {}) {
     } else if (state.route.name === 'projects') {
       setTitle('Projects', `${state.projects.length} project${state.projects.length === 1 ? '' : 's'}`);
       renderProjects();
+    } else if (state.route.name === 'admin') {
+      setTitle('Admin', 'Platform overview & user management');
+      await renderAdmin();
     } else {
       await renderProjectDetail();
     }
@@ -1255,6 +1260,108 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   $$('.modal-backdrop:not([hidden])').forEach((m) => closeModal(m.id));
 });
+
+/* ============================================================
+   ADMIN (admins only — the nav link is hidden for everyone else)
+   ============================================================ */
+
+async function renderAdmin() {
+  const view = $('#view');
+  if (state.user.role !== 'admin') {
+    view.innerHTML =
+      '<div class="empty"><span class="emoji">🔒</span><h3>Admins only</h3><p>Ask an admin to grant you access.</p></div>';
+    return;
+  }
+
+  const [{ stats }, { users }] = await Promise.all([
+    api('/admin/stats'),
+    api('/admin/users'),
+  ]);
+
+  const cards = [
+    ['Users', stats.users, 'blue', '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 19c.7-3.2 3.3-5 6.5-5s5.8 1.8 6.5 5"/><circle cx="17" cy="9" r="2.5"/><path d="M16 14.5c2.6.2 4.6 1.7 5.2 4.5"/>'],
+    ['Admins', stats.admins, 'green', '<path d="M12 3l7 3v5c0 4.4-3 8.3-7 9.5C8 19.3 5 15.4 5 11V6z"/><path d="M9.2 11.8l2 2 3.6-3.6"/>'],
+    ['Projects', stats.projects, 'amber', '<path d="M3 7a2 2 0 0 1 2-2h4l2 2.5h8a2 2 0 0 1 2 2V17a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>'],
+    ['Tasks', stats.tasks, 'red', '<rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M8 9h8M8 13h5"/>'],
+  ]
+    .map(
+      ([label, n, color, path]) => `
+      <div class="stat-card">
+        <div class="stat-icon ${color}"><svg viewBox="0 0 24 24">${path}</svg></div>
+        <div class="stat-body"><strong>${n}</strong><span>${label}</span></div>
+      </div>`
+    )
+    .join('');
+
+  const rows = users
+    .map((u) => {
+      const isSelf = u.id === state.user.id;
+      return `
+      <tr data-user-id="${u.id}" data-user-name="${esc(u.name)}" data-user-role="${u.role}">
+        <td>
+          <strong>${esc(u.name)}</strong>
+          ${isSelf ? '<span class="badge badge-self">you</span>' : ''}
+          <br><small class="muted">${esc(u.email)}</small>
+        </td>
+        <td><span class="badge ${u.role === 'admin' ? 'badge-admin' : ''}">${u.role}</span></td>
+        <td>${u.projects} project${u.projects === 1 ? '' : 's'} · ${u.tasks} task${u.tasks === 1 ? '' : 's'}</td>
+        <td><small>${relTime(u.created_at)}</small></td>
+        <td class="admin-actions">
+          <button type="button" class="btn btn-sm" data-admin-action="role" ${isSelf ? 'disabled title="You cannot change your own role"' : ''}>
+            ${u.role === 'admin' ? 'Demote' : 'Promote'}
+          </button>
+          <button type="button" class="btn btn-sm btn-danger" data-admin-action="delete" ${isSelf ? 'disabled title="You cannot delete yourself"' : ''}>
+            Delete
+          </button>
+        </td>
+      </tr>`;
+    })
+    .join('');
+
+  view.innerHTML = `
+    <div class="grid grid-4 section-gap">${cards}</div>
+
+    <section class="card section-gap">
+      <h2>All users (${users.length})</h2>
+      <p class="muted admin-note">Promote teammates to admin, or remove accounts entirely — projects, tasks and tokens cascade away with them.</p>
+      <div class="table-wrap">
+        <table class="admin-table">
+          <thead>
+            <tr><th>User</th><th>Role</th><th>Activity</th><th>Joined</th><th></th></tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </section>`;
+
+  $$('[data-admin-action]', view).forEach((btn) =>
+    btn.addEventListener('click', onAdminAction)
+  );
+}
+
+async function onAdminAction(e) {
+  const btn = e.currentTarget;
+  const row = btn.closest('tr');
+  const id = Number(row.dataset.userId);
+  const name = row.dataset.userName;
+  const isAdmin = row.dataset.userRole === 'admin';
+
+  try {
+    if (btn.dataset.adminAction === 'role') {
+      const next = isAdmin ? 'user' : 'admin';
+      if (!confirm(`${next === 'admin' ? 'Promote' : 'Demote'} ${name} to "${next}"?`)) return;
+      await api(`/admin/users/${id}`, { method: 'PUT', body: { role: next } });
+      toast(`${name} is now ${next === 'admin' ? 'an admin' : 'a regular user'}.`);
+    } else {
+      if (!confirm(`Delete ${name}? All of their projects, tasks and tokens will be removed.`)) return;
+      await api(`/admin/users/${id}`, { method: 'DELETE' });
+      toast(`${name} was deleted.`);
+    }
+    await renderRoute({ silent: true });
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+}
 
 /* ============================================================
    BOOT

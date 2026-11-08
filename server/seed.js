@@ -90,8 +90,8 @@ function seed() {
   }
 
   const userId = db
-    .prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)')
-    .run('Demo User', DEMO_EMAIL, bcrypt.hashSync(DEMO_PASSWORD, 10)).lastInsertRowid;
+    .prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
+    .run('Demo User', DEMO_EMAIL, bcrypt.hashSync(DEMO_PASSWORD, 10), 'admin').lastInsertRowid;
 
   const insertProject = db.prepare(
     'INSERT INTO projects (user_id, name, description, color) VALUES (?, ?, ?, ?)'

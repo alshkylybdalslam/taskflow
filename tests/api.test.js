@@ -522,7 +522,7 @@ test('OpenAPI spec is served at /api/docs.json', async () => {
   assert.equal(status, 200);
   assert.equal(data.openapi, '3.0.3');
   const operations = Object.values(data.paths).reduce((n, p) => n + Object.keys(p).length, 0);
-  assert.equal(operations, 23, 'the spec must document every endpoint');
+  assert.equal(operations, 27, 'the spec must document every endpoint');
   assert.ok(data.components.securitySchemes.cookieAuth, 'cookie auth documented');
   assert.ok(data.components.securitySchemes.bearerAuth, 'bearer token auth documented');
 });
@@ -546,6 +546,106 @@ test('responses carry standard rate-limit headers', async () => {
   const limit = headers.get('ratelimit-limit') || headers.get('ratelimit');
   assert.ok(limit, 'expected RateLimit-* headers on responses');
   assert.ok(Number(limit) > 0);
+});
+
+/* ---------------- admin panel ---------------- */
+
+test('the first registered account is the admin', async () => {
+  const a = await req('/api/auth/me', { cookie: cookieA });
+  assert.equal(a.data.user.role, 'admin');
+  const b = await req('/api/auth/me', { cookie: cookieB });
+  assert.equal(b.data.user.role, 'user');
+});
+
+test('admin endpoints reject non-admins', async () => {
+  for (const path of ['/api/admin/stats', '/api/admin/users']) {
+    const { status } = await req(path, { cookie: cookieB });
+    assert.equal(status, 403, `${path} must reject regular users`);
+  }
+  const anon = await req('/api/admin/stats');
+  assert.equal(anon.status, 401, 'no session at all must be 401');
+});
+
+test('admin sees platform stats and the full user list', async () => {
+  const stats = await req('/api/admin/stats', { cookie: cookieA });
+  assert.equal(stats.status, 200);
+  assert.ok(stats.data.stats.users >= 2);
+  assert.ok(stats.data.stats.projects >= 1);
+
+  const list = await req('/api/admin/users', { cookie: cookieA });
+  assert.equal(list.status, 200);
+  const ada = list.data.users.find((u) => u.email === 'ada@example.com');
+  assert.equal(ada.role, 'admin');
+  assert.ok(ada.projects >= 1, 'user list carries activity counts');
+  const mallory = list.data.users.find((u) => u.email === 'mallory@example.com');
+  assert.equal(mallory.role, 'user');
+  assert.ok(!('password_hash' in ada), 'never expose password hashes');
+});
+
+test('admin can promote and demote users', async () => {
+  const list = await req('/api/admin/users', { cookie: cookieA });
+  const mallory = list.data.users.find((u) => u.email === 'mallory@example.com');
+
+  const up = await req(`/api/admin/users/${mallory.id}`, {
+    method: 'PUT', cookie: cookieA, body: { role: 'admin' },
+  });
+  assert.equal(up.status, 200);
+  assert.equal(up.data.user.role, 'admin');
+
+  // The promoted user can now use the admin API…
+  const now = await req('/api/admin/stats', { cookie: cookieB });
+  assert.equal(now.status, 200);
+
+  // …and loses it again when demoted.
+  const down = await req(`/api/admin/users/${mallory.id}`, {
+    method: 'PUT', cookie: cookieA, body: { role: 'user' },
+  });
+  assert.equal(down.data.user.role, 'user');
+  const after = await req('/api/admin/stats', { cookie: cookieB });
+  assert.equal(after.status, 403);
+});
+
+test('admins cannot demote or delete themselves', async () => {
+  const me = await req('/api/auth/me', { cookie: cookieA });
+  const id = me.data.user.id;
+
+  const role = await req(`/api/admin/users/${id}`, {
+    method: 'PUT', cookie: cookieA, body: { role: 'user' },
+  });
+  assert.equal(role.status, 400);
+
+  const del = await req(`/api/admin/users/${id}`, { method: 'DELETE', cookie: cookieA });
+  assert.equal(del.status, 400);
+
+  // Still signed in, still admin.
+  const again = await req('/api/admin/stats', { cookie: cookieA });
+  assert.equal(again.status, 200);
+});
+
+test('admin can delete a user — sessions and data cascade away', async () => {
+  // Note: consumes one more AUTH_RATE_LIMIT slot (see below).
+  const reg = await req('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Temp User', email: `temp-${Date.now()}@example.com`, password: 'tempsecret1' },
+  });
+  assert.equal(reg.status, 201);
+  const me = await req('/api/auth/me', { cookie: reg.cookie });
+  const tempId = me.data.user.id;
+
+  const proj = await req('/api/projects', {
+    method: 'POST', cookie: reg.cookie, body: { name: 'Temp project' },
+  });
+  assert.equal(proj.status, 201);
+
+  const del = await req(`/api/admin/users/${tempId}`, { method: 'DELETE', cookie: cookieA });
+  assert.equal(del.status, 200);
+
+  // Their session dies with them…
+  const after = await req('/api/auth/me', { cookie: reg.cookie });
+  assert.equal(after.status, 401);
+  // …and they vanish from the user list.
+  const list = await req('/api/admin/users', { cookie: cookieA });
+  assert.ok(!list.data.users.some((u) => u.id === tempId));
 });
 
 /* ---------------- rate limiting ---------------- */

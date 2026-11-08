@@ -28,7 +28,7 @@ const authLimiter = rateLimit({
 });
 
 function publicUser(user) {
-  return { id: user.id, name: user.name, email: user.email };
+  return { id: user.id, name: user.name, email: user.email, role: user.role };
 }
 
 /** POST /api/auth/register — create an account and start a session */
@@ -51,13 +51,19 @@ router.post('/register', authLimiter, (req, res) => {
     return res.status(409).json({ error: 'An account with this email already exists.' });
   }
 
+  // The very first account on a fresh install becomes the admin, so every
+  // deployment has an admin without shipping a default password.
+  const isFirstUser = !db.prepare('SELECT id FROM users').get();
+
   const passwordHash = bcrypt.hashSync(password, 10);
   const result = db
-    .prepare('INSERT INTO users (name, email, password_hash) VALUES (?, ?, ?)')
-    .run(name.trim(), normalizedEmail, passwordHash);
+    .prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
+    .run(name.trim(), normalizedEmail, passwordHash, isFirstUser ? 'admin' : 'user');
 
   startSession(res, result.lastInsertRowid);
-  const user = db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(result.lastInsertRowid);
+  const user = db
+    .prepare('SELECT id, name, email, role FROM users WHERE id = ?')
+    .get(result.lastInsertRowid);
   res.status(201).json({ user });
 });
 

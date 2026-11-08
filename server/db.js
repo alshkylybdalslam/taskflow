@@ -25,6 +25,7 @@ db.exec(`
     name          TEXT    NOT NULL,
     email         TEXT    NOT NULL UNIQUE COLLATE NOCASE,
     password_hash TEXT    NOT NULL,
+    role          TEXT    NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
     created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
   );
 
@@ -96,5 +97,14 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_task_labels_l   ON task_labels(label_id);
   CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
 `);
+
+// Migration: databases created before roles existed get the column added.
+const userColumns = db.prepare('PRAGMA table_info(users)').all();
+if (!userColumns.some((c) => c.name === 'role')) {
+  db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+  // Legacy installs have no admin yet — promote the oldest account, the
+  // same rule new registrations follow on a fresh database.
+  db.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)");
+}
 
 module.exports = db;

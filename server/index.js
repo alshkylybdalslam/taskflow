@@ -14,6 +14,7 @@ const taskRoutes = require('./routes/tasks');
 const dashboardRoutes = require('./routes/dashboard');
 const labelRoutes = require('./routes/labels');
 const tokenRoutes = require('./routes/tokens');
+const adminRoutes = require('./routes/admin');
 
 const app = express();
 
@@ -50,6 +51,7 @@ app.use('/api/projects', projectRoutes);
 app.use('/api/tasks', taskRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/tokens', tokenRoutes);
+app.use('/api/admin', adminRoutes);
 // Label endpoints live under /projects/… and /tasks/… paths:
 app.use('/api', labelRoutes);
 

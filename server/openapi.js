@@ -52,8 +52,9 @@ const schemas = {
       id: id('User id'),
       name: { type: 'string', example: 'Demo User' },
       email: { type: 'string', format: 'email', example: 'demo@taskflow.dev' },
+      role: { type: 'string', enum: ['user', 'admin'], description: 'First account on a fresh install becomes admin' },
     },
-    required: ['id', 'name', 'email'],
+    required: ['id', 'name', 'email', 'role'],
   },
 
   TaskLabel: {
@@ -234,6 +235,10 @@ const responses = {
   },
   Conflict: {
     description: 'Already exists',
+    content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
+  },
+  Forbidden: {
+    description: 'Authenticated, but not an admin',
     content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } },
   },
   TooManyRequests: {
@@ -748,6 +753,121 @@ const paths = {
       },
     },
   },
+
+  /* ------------------------------ admin ---------------------------- */
+  '/api/admin/stats': {
+    get: {
+      tags: ['Admin'],
+      summary: 'Platform-wide statistics',
+      description: 'Counters across every account (users, projects, tasks, tokens, active sessions).',
+      security: AUTH,
+      responses: {
+        200: {
+          description: 'Global counters',
+          content: json({
+            type: 'object',
+            properties: {
+              stats: {
+                type: 'object',
+                properties: {
+                  users: { type: 'integer' },
+                  admins: { type: 'integer' },
+                  projects: { type: 'integer' },
+                  tasks: { type: 'integer' },
+                  labels: { type: 'integer' },
+                  api_tokens: { type: 'integer' },
+                  sessions: { type: 'integer' },
+                  done_tasks: { type: 'integer' },
+                },
+              },
+            },
+          }),
+        },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        403: { $ref: '#/components/responses/Forbidden' },
+      },
+    },
+  },
+
+  '/api/admin/users': {
+    get: {
+      tags: ['Admin'],
+      summary: 'List every user',
+      description: 'Users with their role and activity counts. Never exposes password hashes — just account metadata.',
+      security: AUTH,
+      responses: {
+        200: {
+          description: 'All users, oldest first',
+          content: json({
+            type: 'object',
+            properties: {
+              users: {
+                type: 'array',
+                items: {
+                  allOf: [
+                    { $ref: '#/components/schemas/User' },
+                    {
+                      type: 'object',
+                      properties: {
+                        created_at: dateTime('Account creation'),
+                        projects: { type: 'integer' },
+                        tasks: { type: 'integer' },
+                        active_sessions: { type: 'integer' },
+                      },
+                    },
+                  ],
+                },
+              },
+            },
+          }),
+        },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        403: { $ref: '#/components/responses/Forbidden' },
+      },
+    },
+  },
+
+  '/api/admin/users/{id}': {
+    put: {
+      tags: ['Admin'],
+      summary: 'Change a user’s role',
+      description: 'Promote to `admin` or demote to `user`. You can never change your own role (lock-out protection).',
+      security: AUTH,
+      parameters: [pathId()],
+      requestBody: {
+        required: true,
+        content: json({
+          type: 'object',
+          required: ['role'],
+          properties: { role: { type: 'string', enum: ['user', 'admin'] } },
+        }),
+      },
+      responses: {
+        200: {
+          description: 'Role updated',
+          content: json({ type: 'object', properties: { user: { $ref: '#/components/schemas/User' } } }),
+        },
+        400: { $ref: '#/components/responses/BadRequest' },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        403: { $ref: '#/components/responses/Forbidden' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    },
+    delete: {
+      tags: ['Admin'],
+      summary: 'Delete a user',
+      description: 'Removes the account; their projects, tasks, labels, tokens and sessions cascade away. You cannot delete yourself.',
+      security: AUTH,
+      parameters: [pathId()],
+      responses: {
+        200: { description: 'Deleted', content: json({ $ref: '#/components/schemas/Ok' }) },
+        400: { $ref: '#/components/responses/BadRequest' },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        403: { $ref: '#/components/responses/Forbidden' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    },
+  },
 };
 
 /* ------------------------------ spec -------------------------------- */
@@ -773,6 +893,7 @@ const spec = {
     { name: 'Labels', description: 'Project-scoped labels attached to tasks' },
     { name: 'Tokens', description: 'Personal access tokens for scripts' },
     { name: 'Dashboard', description: 'Aggregated stats in one request' },
+    { name: 'Admin', description: 'Platform stats & user management (admin role only)' },
   ],
   paths,
   components: {

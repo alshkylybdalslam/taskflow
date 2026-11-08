@@ -67,7 +67,7 @@ function userFromApiToken(req) {
 
   const row = db
     .prepare(
-      `SELECT u.id, u.name, u.email
+      `SELECT u.id, u.name, u.email, u.role
          FROM api_tokens t
          JOIN users u ON u.id = t.user_id
         WHERE t.token_hash = ?`
@@ -92,7 +92,7 @@ function requireAuth(req, res, next) {
   if (token) {
     const row = db
       .prepare(
-        `SELECT u.id, u.name, u.email, s.expires_at
+        `SELECT u.id, u.name, u.email, u.role, s.expires_at
            FROM sessions s
            JOIN users u ON u.id = s.user_id
           WHERE s.token = ?`
@@ -100,7 +100,7 @@ function requireAuth(req, res, next) {
       .get(token);
 
     if (row && row.expires_at > new Date().toISOString()) {
-      req.user = { id: row.id, name: row.name, email: row.email };
+      req.user = { id: row.id, name: row.name, email: row.email, role: row.role };
       req.sessionToken = token;
       return next();
     }
@@ -111,7 +111,7 @@ function requireAuth(req, res, next) {
 
   const apiUser = userFromApiToken(req);
   if (apiUser) {
-    req.user = { id: apiUser.id, name: apiUser.name, email: apiUser.email };
+    req.user = { id: apiUser.id, name: apiUser.name, email: apiUser.email, role: apiUser.role };
     req.apiToken = true;
     return next();
   }
@@ -122,11 +122,21 @@ function requireAuth(req, res, next) {
   return res.status(401).json({ error: 'You need to sign in to do that.' });
 }
 
+/**
+ * Express middleware: admin-only guard. Mount AFTER requireAuth — it just
+ * checks the role that requireAuth attached to req.user.
+ */
+function requireAdmin(req, res, next) {
+  if (req.user && req.user.role === 'admin') return next();
+  return res.status(403).json({ error: 'Admin access required.' });
+}
+
 module.exports = {
   SESSION_COOKIE,
   getSessionToken,
   startSession,
   endSession,
   requireAuth,
+  requireAdmin,
   hashToken,
 };
