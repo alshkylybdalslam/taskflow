@@ -1322,8 +1322,11 @@ async function renderAdmin() {
     <div class="grid grid-4 section-gap">${cards}</div>
 
     <section class="card section-gap">
-      <h2>All users (${users.length})</h2>
-      <p class="muted admin-note">Promote teammates to admin, or remove accounts entirely — projects, tasks and tokens cascade away with them.</p>
+      <div class="admin-head">
+        <h2>All users (${users.length})</h2>
+        <button type="button" class="btn btn-primary btn-sm" id="addUserBtn">+ Add user</button>
+      </div>
+      <p class="muted admin-note">Create accounts for teammates, promote them to admin, or remove them entirely — projects, tasks and tokens cascade away with them.</p>
       <div class="table-wrap">
         <table class="admin-table">
           <thead>
@@ -1334,10 +1337,48 @@ async function renderAdmin() {
       </div>
     </section>`;
 
+  $('#addUserBtn').addEventListener('click', () => openUserModal());
   $$('[data-admin-action]', view).forEach((btn) =>
     btn.addEventListener('click', onAdminAction)
   );
 }
+
+/* ------------------------- add-user modal ------------------------- */
+
+function openUserModal() {
+  const form = $('#userForm');
+  form.reset();
+  form.querySelector('[data-error]').hidden = true;
+  openModal('userModal');
+  form.elements.name.focus();
+}
+
+$('#userForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.currentTarget;
+  const errBox = form.querySelector('[data-error]');
+  const btn = form.querySelector('[type=submit]');
+
+  const payload = {
+    name: form.elements.name.value,
+    email: form.elements.email.value,
+    password: form.elements.password.value,
+    role: form.elements.role.value,
+  };
+
+  btn.disabled = true;
+  try {
+    const { user } = await api('/admin/users', { method: 'POST', body: payload });
+    closeModal('userModal');
+    toast(`${user.name} was created${user.role === 'admin' ? ' as an admin' : ''} — they can sign in now.`);
+    await renderRoute({ silent: true });
+  } catch (err) {
+    errBox.textContent = err.message;
+    errBox.hidden = false;
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 async function onAdminAction(e) {
   const btn = e.currentTarget;

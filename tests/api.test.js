@@ -522,7 +522,7 @@ test('OpenAPI spec is served at /api/docs.json', async () => {
   assert.equal(status, 200);
   assert.equal(data.openapi, '3.0.3');
   const operations = Object.values(data.paths).reduce((n, p) => n + Object.keys(p).length, 0);
-  assert.equal(operations, 27, 'the spec must document every endpoint');
+  assert.equal(operations, 28, 'the spec must document every endpoint');
   assert.ok(data.components.securitySchemes.cookieAuth, 'cookie auth documented');
   assert.ok(data.components.securitySchemes.bearerAuth, 'bearer token auth documented');
 });
@@ -646,6 +646,77 @@ test('admin can delete a user — sessions and data cascade away', async () => {
   // …and they vanish from the user list.
   const list = await req('/api/admin/users', { cookie: cookieA });
   assert.ok(!list.data.users.some((u) => u.id === tempId));
+});
+
+test('admin can create a user — and that user can then sign in', async () => {
+  const created = await req('/api/admin/users', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Grace Hopper', email: 'grace@example.com', password: 'gracesecret1' },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.data.user.email, 'grace@example.com');
+  assert.equal(created.data.user.role, 'user', 'default role is a regular user');
+  assert.ok(!created.cookie, 'creating an account must not sign anyone in');
+
+  // Note: this login consumes one AUTH_RATE_LIMIT slot (10) — the
+  // brute-force test below must still be able to trip it.
+  const login = await req('/api/auth/login', {
+    method: 'POST',
+    body: { email: 'grace@example.com', password: 'gracesecret1' },
+  });
+  assert.equal(login.status, 200);
+  const me = await req('/api/auth/me', { cookie: login.cookie });
+  assert.equal(me.data.user.name, 'Grace Hopper');
+  assert.equal(me.data.user.role, 'user');
+
+  // Admin can grant admin at creation time too.
+  const asAdmin = await req('/api/admin/users', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Admin Twin', email: 'twin@example.com', password: 'twinscret12', role: 'admin' },
+  });
+  assert.equal(asAdmin.status, 201);
+  assert.equal(asAdmin.data.user.role, 'admin');
+});
+
+test('admin create validates input and rejects duplicate emails', async () => {
+  const badCases = [
+    { name: '', email: 'ok@example.com', password: 'longenough1' },
+    { name: 'No Mail', email: 'not-an-email', password: 'longenough1' },
+    { name: 'Short Pw', email: 'ok@example.com', password: 'short' },
+    { name: 'Bad Role', email: 'ok@example.com', password: 'longenough1', role: 'superuser' },
+  ];
+  for (const body of badCases) {
+    const { status } = await req('/api/admin/users', { method: 'POST', cookie: cookieA, body });
+    assert.equal(status, 400, `must reject ${JSON.stringify(body)}`);
+  }
+
+  const dup = await req('/api/admin/users', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Ada Again', email: 'ADA@example.com', password: 'longenough1' },
+  });
+  assert.equal(dup.status, 409);
+});
+
+test('only admins can create users', async () => {
+  const asUser = await req('/api/admin/users', {
+    method: 'POST',
+    cookie: cookieB,
+    body: { name: 'Sneaky', email: 'sneaky@example.com', password: 'longenough1' },
+  });
+  assert.equal(asUser.status, 403);
+
+  const anon = await req('/api/admin/users', {
+    method: 'POST',
+    body: { name: 'Anon', email: 'anon@example.com', password: 'longenough1' },
+  });
+  assert.equal(anon.status, 401);
+
+  // Nothing was created.
+  const list = await req('/api/admin/users', { cookie: cookieA });
+  assert.ok(!list.data.users.some((u) => u.email === 'sneaky@example.com'));
 });
 
 /* ---------------- rate limiting ---------------- */

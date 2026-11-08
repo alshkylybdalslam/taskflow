@@ -246,6 +246,44 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="userModal" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="userModalTitle">
+    <div class="modal-head">
+      <h2 id="userModalTitle">Add user</h2>
+      <button type="button" class="icon-btn modal-close" data-close="userModal" title="Close">
+        <svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </div>
+    <form id="userForm" class="modal-form">
+      <label class="full">
+        <span>Name</span>
+        <input type="text" name="name" placeholder="e.g. Grace Hopper" maxlength="80" required>
+      </label>
+      <label class="full">
+        <span>Email</span>
+        <input type="email" name="email" placeholder="grace@taskflow.dev" maxlength="120" required>
+      </label>
+      <label class="full">
+        <span>Password <em>(min 8 characters)</em></span>
+        <input type="password" name="password" placeholder="Temporary password" minlength="8" maxlength="128" required autocomplete="new-password">
+      </label>
+      <label class="full">
+        <span>Role</span>
+        <select name="role">
+          <option value="user" selected>Regular user</option>
+          <option value="admin">Admin</option>
+        </select>
+      </label>
+      <p class="form-error full" data-error hidden></p>
+      <div class="modal-actions full">
+        <span class="spacer"></span>
+        <button type="button" class="btn" data-close="userModal">Cancel</button>
+        <button type="submit" class="btn btn-primary">Create user</button>
+      </div>
+    </form>
+  </div>
+</div>
+
 <div class="toasts" id="toasts"></div>
 
 <script src="app.js"></script>

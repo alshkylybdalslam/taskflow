@@ -8,7 +8,7 @@ Projects, tasks, labels, deadlines, a drag-and-drop kanban board and a dashboard
 that tells you exactly where you stand.
 
 [![CI](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-96.60%25-brightgreen.svg)](#-testing--coverage)
+[![Coverage](https://img.shields.io/badge/coverage-96.66%25-brightgreen.svg)](#-testing--coverage)
 [![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x%20%7C%2022.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
@@ -21,8 +21,8 @@ that tells you exactly where you stand.
 ## ✨ Features
 
 - **🔐 Accounts & sessions** — register/login with bcrypt password hashing, hardened httpOnly session cookies (`SameSite=Lax`, `Path=/`, `Secure` over HTTPS) and **rate-limited** credential endpoints (brute-force protection)
-- **🛡 Security hardening** — `helmet` with a strict Content-Security-Policy (`script-src 'self'`), HSTS, MIME-sniffing/referrer protections, a 64 KB JSON body limit (413 on overflow) and a global per-IP rate limit
-- **👑 Admin panel** — role-based access (the first account on a fresh install becomes admin): platform-wide stats, user list with activity counts, promote/demote and account deletion with full cascade
+- **🛡 Security hardening** — `helmet` with a strict Content-Security-Policy (`script-src 'self'`), HSTS, MIME-sniffing/referrer protections, a 64 KB JSON body limit (413 on overflow), a global per-IP rate limit and a production container that runs as a non-root user
+- **👑 Admin panel** — role-based access (the first account on a fresh install becomes admin): platform-wide stats, user list with activity counts, create users on the fly, promote/demote and account deletion with full cascade
 - **📁 Projects** — create colour-coded projects with live progress tracking
 - **✔ Tasks** — status (`To do → In progress → Done`), priority, due dates, descriptions
 - **🗂 Kanban board** — drag & drop tasks between columns (native HTML5 DnD, zero libraries), with a List ⇄ Board toggle remembered across visits
@@ -34,7 +34,7 @@ that tells you exactly where you stand.
 - **📖 Interactive API docs** — OpenAPI 3.0.3 spec with Swagger UI at [`/api/docs`](http://localhost:3000/api/docs); machine-readable spec at `/api/docs.json`
 - **🌗 Dark mode** — one-click theme toggle, persisted in `localStorage` and applied before first paint (no flash)
 - **📱 Responsive UI** — polished single-page frontend with modals, toasts and empty states
-- **🧪 Tested** — 43 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, rate limiting, security headers, the admin panel and the API docs
+- **🧪 Tested** — 46 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, rate limiting, security headers, the admin panel and the API docs
 
 ## 📸 Screenshots
 
@@ -65,7 +65,7 @@ that tells you exactly where you stand.
 | API docs   | OpenAPI 3.0.3 + Swagger UI (`swagger-ui-express`) at `/api/docs` |
 | Frontend   | Vanilla JS SPA, hand-rolled SVG/CSS charts (no framework, no chart library) |
 | Testing    | Node built-in test runner (`node --test`) + `fetch`, coverage via Node's built-in test coverage |
-| Delivery   | GitHub Actions CI (Node 18, 20 & 22), multi-stage Dockerfile |
+| Delivery   | GitHub Actions CI (Node 18, 20 & 22 + Docker image smoke test), multi-stage Dockerfile |
 
 ## 🚀 Quick start
 
@@ -138,6 +138,7 @@ All endpoints are JSON. Protected routes accept **either** a session cookie
 | GET    | `/api/dashboard`        | Summary, charts, deadlines, activity |
 | GET    | `/api/admin/stats`      | Platform-wide counters *(admin)* |
 | GET    | `/api/admin/users`      | Every user with activity counts *(admin)* |
+| POST   | `/api/admin/users`      | Create an account (name/email/password/role) *(admin)* |
 | PUT    | `/api/admin/users/:id`  | Promote / demote *(admin; never yourself)* |
 | DELETE | `/api/admin/users/:id`  | Delete a user, data cascades *(admin)* |
 
@@ -188,10 +189,10 @@ taskflow/
 │       └── dashboard.js    # Aggregated stats in one round trip
 ├── public/                 # Frontend SPA (index.html, styles.css, app.js, theme.js)
 ├── tests/
-│   └── api.test.js         # 43 integration tests (node --test)
+│   └── api.test.js         # 46 integration tests (node --test)
 ├── docs/                   # README screenshots
 ├── .github/workflows/
-│   └── ci.yml              # CI: npm ci + tests + coverage (Node 18, 20 & 22)
+│   └── ci.yml              # CI: npm ci + tests + coverage (Node 18, 20 & 22) + Docker build/smoke test
 └── Dockerfile              # Multi-stage production image
 ```
 
@@ -207,7 +208,7 @@ taskflow/
 ## 🧪 Testing & coverage
 
 ```bash
-npm test          # 43 tests, ~3s
+npm test          # 46 tests, ~3s
 npm run coverage  # same tests, built-in V8 coverage table
 ```
 
@@ -215,11 +216,11 @@ npm run coverage  # same tests, built-in V8 coverage table
 -------------------|---------|----------|---------|---------|
 File               | % Stmts | % Branch | % Funcs | % Lines |
 -------------------|---------|----------|---------|---------|
-All files          |   96.60 |    79.39 |   93.94 |   96.60 |
+All files          |   96.66 |    80.17 |   94.16 |   96.66 |
 -------------------|---------|----------|---------|---------|
 ```
 
-CI runs the suite on every push and pull request against Node 18, 20 **and** 22.
+CI runs the suite on every push and pull request against Node 18, 20 **and** 22, then builds the Docker image and smoke-tests it (seed-on-boot, server up, non-root user).
 
 ## 🗺 Roadmap
 

@@ -5,6 +5,7 @@
  *
  *   GET    /api/admin/stats        platform-wide counters
  *   GET    /api/admin/users        every user with activity counts
+ *   POST   /api/admin/users        create an account on someone's behalf
  *   PUT    /api/admin/users/:id    promote / demote (never yourself)
  *   DELETE /api/admin/users/:id    delete a user and all their data
  *
@@ -12,6 +13,7 @@
  */
 
 const express = require('express');
+const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
 
@@ -20,6 +22,7 @@ const router = express.Router();
 router.use(requireAuth, requireAdmin);
 
 const ROLES = ['user', 'admin'];
+const EMAIL_RE = /^\S+@\S+\.\S+$/;
 
 /** GET /api/admin/stats — counters for the admin dashboard. */
 router.get('/stats', (req, res) => {
@@ -53,6 +56,46 @@ router.get('/users', (req, res) => {
     )
     .all();
   res.json({ users });
+});
+
+/**
+ * POST /api/admin/users — create an account (admin onboarding, no invite
+ * flow needed). The new user gets a session-free account: they log in
+ * with the password set here. Deliberately NOT behind authLimiter — that
+ * budget is for the public register/login endpoints.
+ */
+router.post('/users', (req, res) => {
+  const { name, email, password, role } = req.body || {};
+
+  if (typeof name !== 'string' || !name.trim() || name.trim().length > 80) {
+    return res.status(400).json({ error: 'Name is required (max 80 characters).' });
+  }
+  if (typeof email !== 'string' || !EMAIL_RE.test(email.trim())) {
+    return res.status(400).json({ error: 'A valid email is required.' });
+  }
+  if (typeof password !== 'string' || password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  }
+  const finalRole = role === undefined ? 'user' : role;
+  if (!ROLES.includes(finalRole)) {
+    return res.status(400).json({ error: 'Role must be "user" or "admin".' });
+  }
+
+  const normalizedEmail = email.trim().toLowerCase();
+  const existing = db.prepare('SELECT id FROM users WHERE email = ?').get(normalizedEmail);
+  if (existing) {
+    return res.status(409).json({ error: 'An account with this email already exists.' });
+  }
+
+  const passwordHash = bcrypt.hashSync(password, 10);
+  const result = db
+    .prepare('INSERT INTO users (name, email, password_hash, role) VALUES (?, ?, ?, ?)')
+    .run(name.trim(), normalizedEmail, passwordHash, finalRole);
+
+  const user = db
+    .prepare('SELECT id, name, email, role, created_at FROM users WHERE id = ?')
+    .get(result.lastInsertRowid);
+  res.status(201).json({ user });
 });
 
 /** PUT /api/admin/users/:id — set a user's role. */

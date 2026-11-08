@@ -1136,6 +1136,8 @@ textarea { resize: vertical; }
 /* ---------------- admin panel ---------------- */
 .muted { color: var(--muted); }
 .admin-note { margin: .2rem 0 1rem; font-size: .9rem; }
+.admin-head { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.admin-head h2 { margin: 0; }
 .table-wrap { overflow-x: auto; }
 .admin-table { width: 100%; border-collapse: collapse; font-size: .92rem; }
 .admin-table th {

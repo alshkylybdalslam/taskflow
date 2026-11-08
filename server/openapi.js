@@ -825,6 +825,35 @@ const paths = {
         403: { $ref: '#/components/responses/Forbidden' },
       },
     },
+    post: {
+      tags: ['Admin'],
+      summary: 'Create a user',
+      description: 'Admin onboarding: creates an account with a name, email and password. The new user signs in through the normal login endpoint — no session is started here. Rate limit budget is reserved for the public auth endpoints.',
+      security: AUTH,
+      requestBody: {
+        required: true,
+        content: json({
+          type: 'object',
+          required: ['name', 'email', 'password'],
+          properties: {
+            name: { type: 'string', minLength: 1, maxLength: 80, example: 'Grace Hopper' },
+            email: { type: 'string', format: 'email', example: 'grace@taskflow.dev' },
+            password: { type: 'string', minLength: 8, example: 'correct horse battery staple' },
+            role: { type: 'string', enum: ['user', 'admin'], default: 'user', description: 'Optional — grant admin immediately' },
+          },
+        }),
+      },
+      responses: {
+        201: {
+          description: 'Account created (no session — sign in separately)',
+          content: json({ type: 'object', properties: { user: { $ref: '#/components/schemas/User' } } }),
+        },
+        400: { $ref: '#/components/responses/BadRequest' },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        403: { $ref: '#/components/responses/Forbidden' },
+        409: { $ref: '#/components/responses/Conflict' },
+      },
+    },
   },
 
   '/api/admin/users/{id}': {
