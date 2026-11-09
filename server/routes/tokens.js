@@ -19,6 +19,18 @@ const router = express.Router();
 router.use(requireAuth);
 
 const NAME_RE = /^[\w][\w .\-]{0,59}$/;
+const MAX_TOKENS = 20;
+
+/**
+ * Managing tokens requires a browser session. A leaked bearer token must
+ * not be able to mint replacements that survive revoking the original.
+ */
+function requireSession(req, res, next) {
+  if (req.apiToken) {
+    return res.status(403).json({ error: 'Sign in with a session to manage API tokens.' });
+  }
+  next();
+}
 
 /** GET /api/tokens — list my tokens (never the secret itself) */
 router.get('/', (req, res) => {
@@ -34,12 +46,17 @@ router.get('/', (req, res) => {
 });
 
 /** POST /api/tokens — mint a new token, returning the raw value exactly once */
-router.post('/', (req, res) => {
+router.post('/', requireSession, (req, res) => {
   const { name } = req.body || {};
   if (typeof name !== 'string' || !NAME_RE.test(name.trim())) {
     return res
       .status(400)
       .json({ error: 'Give the token a name (1–60 letters, numbers, spaces, - or .).' });
+  }
+
+  const count = db.prepare('SELECT COUNT(*) AS n FROM api_tokens WHERE user_id = ?').get(req.user.id).n;
+  if (count >= MAX_TOKENS) {
+    return res.status(409).json({ error: `You can have at most ${MAX_TOKENS} tokens — revoke one first.` });
   }
 
   const raw = `tf_${crypto.randomBytes(20).toString('hex')}`;

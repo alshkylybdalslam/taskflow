@@ -287,7 +287,7 @@ const paths = {
           properties: {
             name: { type: 'string', minLength: 2, example: 'Demo User' },
             email: { type: 'string', format: 'email', example: 'new@user.dev' },
-            password: { type: 'string', minLength: 8, example: 'correct horse battery staple' },
+            password: { type: 'string', minLength: 8, maxLength: 72, example: 'correct horse battery staple' },
           },
         }),
       },
@@ -742,7 +742,7 @@ const paths = {
     get: {
       tags: ['Dashboard'],
       summary: 'Everything the dashboard needs',
-      description: 'One round trip: summary numbers, priority split, per-project progress, upcoming deadlines, recent completions and a 7-day completion series.',
+      description: 'One client request: summary numbers, priority split, per-project progress, upcoming deadlines, recent completions and a 7-day completion series (six fast SQLite queries behind the scenes).',
       security: AUTH,
       responses: {
         200: {
@@ -838,7 +838,7 @@ const paths = {
           properties: {
             name: { type: 'string', minLength: 1, maxLength: 80, example: 'Grace Hopper' },
             email: { type: 'string', format: 'email', example: 'grace@taskflow.dev' },
-            password: { type: 'string', minLength: 8, example: 'correct horse battery staple' },
+            password: { type: 'string', minLength: 8, maxLength: 72, example: 'correct horse battery staple' },
             role: { type: 'string', enum: ['user', 'admin'], default: 'user', description: 'Optional — grant admin immediately' },
           },
         }),

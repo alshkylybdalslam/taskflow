@@ -33,17 +33,29 @@ app.use(helmet());
 // of being buffered into memory (see the error handler below).
 app.use(express.json({ limit: '64kb' }));
 
+/** Numeric env var: `0` disables the limiter, invalid/empty uses the fallback. */
+function envLimit(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
 // Global rate limit per IP for every route (auth endpoints have their own
 // tighter limiter on top). Standard `RateLimit-*` headers are sent.
-app.use(
-  rateLimit({
-    windowMs: 15 * 60 * 1000,
-    limit: Number(process.env.API_RATE_LIMIT_MAX) || 1000,
-    standardHeaders: true,
-    legacyHeaders: false,
-    message: { error: 'Too many requests — please try again later.' },
-  })
-);
+// API_RATE_LIMIT_MAX=0 disables the limiter explicitly.
+const apiMax = envLimit('API_RATE_LIMIT_MAX', 1000);
+if (apiMax > 0) {
+  app.use(
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: apiMax,
+      standardHeaders: true,
+      legacyHeaders: false,
+      message: { error: 'Too many requests — please try again later.' },
+    })
+  );
+}
 
 // --- API -------------------------------------------------------------
 app.use('/api/auth', authRoutes);
@@ -57,16 +69,19 @@ app.use('/api', labelRoutes);
 
 // --- Interactive API documentation ------------------------------------
 // The machine-readable spec and the Swagger UI must be mounted BEFORE the
-// /api 404 catch-all below.
-app.get('/api/docs.json', (req, res) => res.json(openapiSpec));
-app.use(
-  '/api/docs',
-  swaggerUi.serve,
-  swaggerUi.setup(openapiSpec, {
-    customSiteTitle: 'TaskFlow API — docs',
-    explorer: false,
-  })
-);
+// /api 404 catch-all below. They are public by default (the docs are part
+// of the portfolio demo); set DISABLE_DOCS=1 to hide them in production.
+if (process.env.DISABLE_DOCS !== '1') {
+  app.get('/api/docs.json', (req, res) => res.json(openapiSpec));
+  app.use(
+    '/api/docs',
+    swaggerUi.serve,
+    swaggerUi.setup(openapiSpec, {
+      customSiteTitle: 'TaskFlow API — docs',
+      explorer: false,
+    })
+  );
+}
 
 // Unknown API endpoints must return JSON, never fall through to the SPA.
 app.use('/api', (req, res) => res.status(404).json({ error: 'Endpoint not found.' }));

@@ -13,6 +13,7 @@
  */
 
 const express = require('express');
+const rateLimit = require('express-rate-limit');
 const bcrypt = require('bcryptjs');
 const db = require('../db');
 const { requireAuth, requireAdmin } = require('../middleware/auth');
@@ -23,6 +24,29 @@ router.use(requireAuth, requireAdmin);
 
 const ROLES = ['user', 'admin'];
 const EMAIL_RE = /^\S+@\S+\.\S+$/;
+const MAX_PASSWORD_BYTES = 72; // bcrypt silently truncates beyond this
+
+/** Numeric env var: `0` disables the limiter, invalid/empty uses the fallback. */
+function envLimit(name, fallback) {
+  const raw = process.env[name];
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
+}
+
+// Account creation gets its own quota: it sits behind requireAdmin (so only
+// admins consume it) and never eats the public auth limiter's budget.
+const createMax = envLimit('ADMIN_RATE_LIMIT_MAX', 30);
+const createLimiter =
+  createMax > 0
+    ? rateLimit({
+        windowMs: 15 * 60 * 1000,
+        limit: createMax,
+        standardHeaders: true,
+        legacyHeaders: false,
+        message: { error: 'Too many account creations — please try again later.' },
+      })
+    : (req, res, next) => next();
 
 /** GET /api/admin/stats — counters for the admin dashboard. */
 router.get('/stats', (req, res) => {
@@ -64,7 +88,7 @@ router.get('/users', (req, res) => {
  * with the password set here. Deliberately NOT behind authLimiter — that
  * budget is for the public register/login endpoints.
  */
-router.post('/users', (req, res) => {
+router.post('/users', createLimiter, (req, res) => {
   const { name, email, password, role } = req.body || {};
 
   if (typeof name !== 'string' || !name.trim() || name.trim().length > 80) {
@@ -75,6 +99,11 @@ router.post('/users', (req, res) => {
   }
   if (typeof password !== 'string' || password.length < 8) {
     return res.status(400).json({ error: 'Password must be at least 8 characters.' });
+  }
+  if (Buffer.byteLength(password, 'utf8') > MAX_PASSWORD_BYTES) {
+    return res
+      .status(400)
+      .json({ error: `Password must be ${MAX_PASSWORD_BYTES} bytes or fewer (bcrypt limit).` });
   }
   const finalRole = role === undefined ? 'user' : role;
   if (!ROLES.includes(finalRole)) {

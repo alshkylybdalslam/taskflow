@@ -8,7 +8,7 @@ Projects, tasks, labels, deadlines, a drag-and-drop kanban board and a dashboard
 that tells you exactly where you stand.
 
 [![CI](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml)
-[![Coverage](https://img.shields.io/badge/coverage-96.66%25-brightgreen.svg)](#-testing--coverage)
+[![Coverage](https://img.shields.io/badge/coverage-96.94%25-brightgreen.svg)](#-testing--coverage)
 [![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x%20%7C%2022.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
@@ -29,12 +29,12 @@ that tells you exactly where you stand.
 - **🏷 Labels** — project-scoped tags on a `task_labels` junction table; create, assign, filter and delete them from the UI
 - **⏰ Deadlines** — due dates on every task, overdue highlighting, and *Overdue / Due today / No due date* filters
 - **🔎 Filtering & search** — by project, status, priority, deadline, label, or free-text search
-- **📊 Dashboard** — status donut, 7-day completion trend, per-project progress, upcoming deadlines and overdue alerts — all in a single API round trip
+- **📊 Dashboard** — status donut, 7-day completion trend, per-project progress, upcoming deadlines and overdue alerts — all from a single API request
 - **🔑 API tokens** — personal access tokens (`Bearer tf_…`) for scripted access; only the SHA-256 hash is stored, the secret is shown exactly once
 - **📖 Interactive API docs** — OpenAPI 3.0.3 spec with Swagger UI at [`/api/docs`](http://localhost:3000/api/docs); machine-readable spec at `/api/docs.json`
 - **🌗 Dark mode** — one-click theme toggle, persisted in `localStorage` and applied before first paint (no flash)
 - **📱 Responsive UI** — polished single-page frontend with modals, toasts and empty states
-- **🧪 Tested** — 46 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, rate limiting, security headers, the admin panel and the API docs
+- **🧪 Tested** — 53 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, rate limiting, write atomicity, security headers, the admin panel and the API docs
 
 ## 📸 Screenshots
 
@@ -186,10 +186,10 @@ taskflow/
 │       ├── tasks.js        # Task CRUD + filters + ownership checks
 │       ├── labels.js       # Label CRUD + task attach/detach (junction table)
 │       ├── tokens.js       # Personal access tokens (hash-only storage)
-│       └── dashboard.js    # Aggregated stats in one round trip
+│       └── dashboard.js    # Aggregated stats in one client request
 ├── public/                 # Frontend SPA (index.html, styles.css, app.js, theme.js)
 ├── tests/
-│   └── api.test.js         # 46 integration tests (node --test)
+│   └── api.test.js         # 53 integration tests (node --test)
 ├── docs/                   # README screenshots
 ├── .github/workflows/
 │   └── ci.yml              # CI: npm ci + tests + coverage (Node 18, 20 & 22) + Docker build/smoke test
@@ -208,7 +208,7 @@ taskflow/
 ## 🧪 Testing & coverage
 
 ```bash
-npm test          # 46 tests, ~3s
+npm test          # 53 tests, ~3s
 npm run coverage  # same tests, built-in V8 coverage table
 ```
 
@@ -216,7 +216,7 @@ npm run coverage  # same tests, built-in V8 coverage table
 -------------------|---------|----------|---------|---------|
 File               | % Stmts | % Branch | % Funcs | % Lines |
 -------------------|---------|----------|---------|---------|
-All files          |   96.66 |    80.17 |   94.16 |   96.66 |
+All files          |   96.94 |    80.79 |   93.75 |   96.94 |
 -------------------|---------|----------|---------|---------|
 ```
 

@@ -99,12 +99,16 @@ db.exec(`
 `);
 
 // Migration: databases created before roles existed get the column added.
+// DDL is transactional in SQLite — wrapping both statements means a crash
+// can never leave an install with the column but no admin.
 const userColumns = db.prepare('PRAGMA table_info(users)').all();
 if (!userColumns.some((c) => c.name === 'role')) {
-  db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
-  // Legacy installs have no admin yet — promote the oldest account, the
-  // same rule new registrations follow on a fresh database.
-  db.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)");
+  db.transaction(() => {
+    db.exec("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'");
+    // Legacy installs have no admin yet — promote the oldest account, the
+    // same rule new registrations follow on a fresh database.
+    db.exec("UPDATE users SET role = 'admin' WHERE id = (SELECT MIN(id) FROM users)");
+  })();
 }
 
 module.exports = db;

@@ -7,8 +7,11 @@
  */
 
 process.env.DB_PATH = ':memory:';
-// Low auth rate limit so the brute-force test can trip it quickly.
-process.env.AUTH_RATE_LIMIT_MAX = '10';
+// Low auth rate limit so the brute-force test can trip it quickly (the
+// budget is shared by every register/login call in this file).
+process.env.AUTH_RATE_LIMIT_MAX = '12';
+// Separate quota for admin account creation (POST /api/admin/users).
+process.env.ADMIN_RATE_LIMIT_MAX = '10';
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert/strict');
@@ -31,13 +34,14 @@ function day(n = 0) {
   return new Date(Date.now() + n * 86400000).toISOString().slice(0, 10);
 }
 
-async function req(path, { method = 'GET', body, cookie, auth } = {}) {
+async function req(path, { method = 'GET', body, cookie, auth, headers: extra } = {}) {
   const res = await fetch(`${base}${path}`, {
     method,
     headers: {
       ...(body ? { 'Content-Type': 'application/json' } : {}),
       ...(cookie ? { Cookie: cookie } : {}),
       ...(auth ? { Authorization: `Bearer ${auth}` } : {}),
+      ...(extra || {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -80,6 +84,15 @@ test('registration validates input', async () => {
     body: { name: 'X', email: 'not-an-email', password: 'short' },
   });
   assert.equal(bad.status, 400);
+
+  // bcrypt only uses the first 72 bytes — anything longer is rejected
+  // instead of being silently truncated.
+  const long = await req('/api/auth/register', {
+    method: 'POST',
+    body: { name: 'Long Password', email: 'long@example.com', password: 'x'.repeat(73) },
+  });
+  assert.equal(long.status, 400);
+  assert.match(long.data.error, /72 bytes/i);
 });
 
 test('registers a new user and starts a session', async () => {
@@ -105,6 +118,13 @@ test('GET /api/auth/me returns the signed-in user', async () => {
   const { status, data } = await req('/api/auth/me', { cookie: cookieA });
   assert.equal(status, 200);
   assert.equal(data.user.name, 'Ada Lovelace');
+});
+
+test('a malformed session cookie is rejected with 401, not a 500', async () => {
+  const broken = await req('/api/auth/me', {
+    headers: { Cookie: 'taskflow_session=%E0%A4%A' },
+  });
+  assert.equal(broken.status, 401, 'bad percent-encoding must not crash the request');
 });
 
 test('login fails with the wrong password', async () => {
@@ -403,7 +423,9 @@ test("labels can't cross project boundaries and are invisible to other users", a
     cookie: cookieA,
     body: { label_id: otherLabel.data.label.id },
   });
-  assert.equal(cross.status, 400);
+  // Same 404 as a nonexistent label — label ids can't be probed across projects.
+  assert.equal(cross.status, 404);
+  assert.equal(cross.data.error, 'Label not found.');
 
   // Another user can't list, create or delete my labels.
   const listB = await req(`/api/projects/${projectId}/labels`, { cookie: cookieB });
@@ -419,6 +441,90 @@ test("labels can't cross project boundaries and are invisible to other users", a
 
   // Clean up the sandbox project (cascades its labels).
   await req(`/api/projects/${sandboxProjectId}`, { method: 'DELETE', cookie: cookieA });
+});
+
+/* ---------------- task write atomicity ---------------- */
+
+test('invalid labels reject the whole update — fields stay untouched', async () => {
+  const before = await req('/api/tasks', { cookie: cookieA });
+  const originalTitle = before.data.tasks.find((t) => t.id === taskId).title;
+
+  const put = await req(`/api/tasks/${taskId}`, {
+    method: 'PUT',
+    cookie: cookieA,
+    body: { title: 'Should not stick', label_ids: [999999] },
+  });
+  assert.equal(put.status, 400);
+
+  const after = await req('/api/tasks', { cookie: cookieA });
+  assert.equal(
+    after.data.tasks.find((t) => t.id === taskId).title,
+    originalTitle,
+    'a failed label validation must not half-apply the update'
+  );
+});
+
+test('invalid labels reject task creation — no orphan task is left behind', async () => {
+  const post = await req('/api/tasks', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { project_id: projectId, title: 'Orphan candidate', label_ids: [999999] },
+  });
+  assert.equal(post.status, 400);
+
+  const list = await req('/api/tasks?q=Orphan%20candidate', { cookie: cookieA });
+  assert.equal(list.data.tasks.length, 0);
+});
+
+test('moving a task to another project clears its project-scoped labels', async () => {
+  // Precondition: the task carries a label from its current project.
+  const before = await req('/api/tasks', { cookie: cookieA });
+  assert.ok(before.data.tasks.find((t) => t.id === taskId).labels.length > 0);
+
+  const other = await req('/api/projects', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { name: 'Atomicity sandbox' },
+  });
+  const otherId = other.data.project.id;
+
+  const moved = await req(`/api/tasks/${taskId}`, {
+    method: 'PUT',
+    cookie: cookieA,
+    body: { project_id: otherId },
+  });
+  assert.equal(moved.status, 200);
+  assert.deepEqual(moved.data.task.labels, [], 'old-project labels must not follow the task');
+
+  // Move it back so later tests see the original layout.
+  const back = await req(`/api/tasks/${taskId}`, {
+    method: 'PUT',
+    cookie: cookieA,
+    body: { project_id: projectId },
+  });
+  assert.equal(back.status, 200);
+  await req(`/api/projects/${otherId}`, { method: 'DELETE', cookie: cookieA });
+});
+
+test('search treats % and _ literally instead of as LIKE wildcards', async () => {
+  const one = await req('/api/tasks', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { project_id: projectId, title: '100% done review' },
+  });
+  const two = await req('/api/tasks', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { project_id: projectId, title: '100x done review' },
+  });
+
+  const hit = await req('/api/tasks?q=100%25', { cookie: cookieA });
+  const titles = hit.data.tasks.map((t) => t.title);
+  assert.ok(titles.includes('100% done review'));
+  assert.ok(!titles.includes('100x done review'), '% must not act as a wildcard');
+
+  await req(`/api/tasks/${one.data.task.id}`, { method: 'DELETE', cookie: cookieA });
+  await req(`/api/tasks/${two.data.task.id}`, { method: 'DELETE', cookie: cookieA });
 });
 
 /* ---------------- API tokens ---------------- */
@@ -447,6 +553,15 @@ test('a bearer token authenticates API requests without a cookie', async () => {
 
   const projects = await req('/api/projects', { auth: apiSecret });
   assert.equal(projects.status, 200);
+});
+
+test('a bearer token cannot mint new tokens — session only', async () => {
+  const { status } = await req('/api/tokens', {
+    method: 'POST',
+    auth: apiSecret,
+    body: { name: 'persistence attempt' },
+  });
+  assert.equal(status, 403, 'a leaked token must not create replacements that survive revocation');
 });
 
 test('listing tokens never leaks the secret; garbage tokens are rejected', async () => {
@@ -717,6 +832,25 @@ test('only admins can create users', async () => {
   // Nothing was created.
   const list = await req('/api/admin/users', { cookie: cookieA });
   assert.ok(!list.data.users.some((u) => u.email === 'sneaky@example.com'));
+});
+
+test('admin account creation has its own rate limit', async () => {
+  // Seven create attempts have run in this section already (ADMIN_RATE_LIMIT_MAX=10).
+  let sawLimit = false;
+  for (let i = 0; i < 6 && !sawLimit; i++) {
+    const out = await req('/api/admin/users', {
+      method: 'POST',
+      cookie: cookieA,
+      body: { name: `Bulk ${i}`, email: `bulk-${i}@example.com`, password: 'bulkenough1' },
+    });
+    if (out.status === 429) {
+      sawLimit = true;
+      assert.match(out.data.error, /too many/i);
+    } else {
+      assert.equal(out.status, 201);
+    }
+  }
+  assert.ok(sawLimit, 'expected the admin-create limiter to trip within 6 attempts');
 });
 
 /* ---------------- rate limiting ---------------- */

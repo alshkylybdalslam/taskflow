@@ -60,7 +60,7 @@
         </label>
         <label>
           <span>Password</span>
-          <input type="password" name="password" autocomplete="new-password" placeholder="At least 8 characters" minlength="8" required>
+          <input type="password" name="password" autocomplete="new-password" placeholder="At least 8 characters" minlength="8" maxlength="72" required>
         </label>
         <p class="form-error" data-error hidden></p>
         <button type="submit" class="btn btn-primary btn-block">Create account</button>
@@ -265,7 +265,7 @@
       </label>
       <label class="full">
         <span>Password <em>(min 8 characters)</em></span>
-        <input type="password" name="password" placeholder="Temporary password" minlength="8" maxlength="128" required autocomplete="new-password">
+        <input type="password" name="password" placeholder="Temporary password" minlength="8" maxlength="72" required autocomplete="new-password">
       </label>
       <label class="full">
         <span>Role</span>

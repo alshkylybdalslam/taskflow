@@ -49,19 +49,24 @@ function ownedTask(id, userId) {
 /** Labels of one task, as [{id, name, color}] — used in task responses. */
 function labelsFor(taskIds) {
   if (!taskIds.length) return new Map();
-  const marks = taskIds.map(() => '?').join(',');
-  const rows = db
-    .prepare(
-      `SELECT tl.task_id, l.id, l.name, l.color
-         FROM task_labels tl
-         JOIN labels l ON l.id = tl.label_id
-        WHERE tl.task_id IN (${marks})`
-    )
-    .all(...taskIds);
   const map = new Map();
-  for (const r of rows) {
-    if (!map.has(r.task_id)) map.set(r.task_id, []);
-    map.get(r.task_id).push({ id: r.id, name: r.name, color: r.color });
+  // Chunk the ids: SQLite allows ~999 bound variables per statement, so a
+  // large task list must not build one huge IN (?, ?, …) clause.
+  for (let i = 0; i < taskIds.length; i += 500) {
+    const chunk = taskIds.slice(i, i + 500);
+    const marks = chunk.map(() => '?').join(',');
+    const rows = db
+      .prepare(
+        `SELECT tl.task_id, l.id, l.name, l.color
+           FROM task_labels tl
+           JOIN labels l ON l.id = tl.label_id
+          WHERE tl.task_id IN (${marks})`
+      )
+      .all(...chunk);
+    for (const r of rows) {
+      if (!map.has(r.task_id)) map.set(r.task_id, []);
+      map.get(r.task_id).push({ id: r.id, name: r.name, color: r.color });
+    }
   }
   return map;
 }
@@ -138,9 +143,10 @@ router.post('/tasks/:id/labels', requireAuth, (req, res) => {
 
   const labelId = Number((req.body || {}).label_id);
   const label = db.prepare('SELECT id, project_id FROM labels WHERE id = ?').get(labelId);
-  if (!label) return res.status(404).json({ error: 'Label not found.' });
-  if (label.project_id !== task.project_id) {
-    return res.status(400).json({ error: 'That label belongs to a different project.' });
+  // Same response for "does not exist" and "belongs to another account's
+  // project" — otherwise label ids could be probed across accounts.
+  if (!label || label.project_id !== task.project_id) {
+    return res.status(404).json({ error: 'Label not found.' });
   }
 
   db.prepare('INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?, ?)').run(

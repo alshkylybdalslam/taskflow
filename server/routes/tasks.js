@@ -69,16 +69,23 @@ function validateTask(body, { partial = false } = {}) {
   return null;
 }
 
-/** Replace a task's label assignments. Returns an error string, or null. */
-function setTaskLabels(taskId, projectId, labelIds) {
+/** Validate that every label belongs to `projectId` — writes nothing. */
+function validateLabelIds(projectId, labelIds) {
   const ids = [...new Set(labelIds.map(Number))];
-  // Validate every label BEFORE touching the junction table.
   for (const id of ids) {
     const label = db.prepare('SELECT project_id FROM labels WHERE id = ?').get(id);
     if (!label || label.project_id !== projectId) {
       return 'One of those labels belongs to another project.';
     }
   }
+  return null;
+}
+
+/** Replace a task's label assignments. Returns an error string, or null. */
+function setTaskLabels(taskId, projectId, labelIds) {
+  const error = validateLabelIds(projectId, labelIds);
+  if (error) return error;
+  const ids = [...new Set(labelIds.map(Number))];
   const wipe = db.prepare('DELETE FROM task_labels WHERE task_id = ?');
   const link = db.prepare('INSERT OR IGNORE INTO task_labels (task_id, label_id) VALUES (?, ?)');
   db.transaction(() => {
@@ -112,8 +119,10 @@ router.get('/', (req, res) => {
     params.push(priority);
   }
   if (q) {
-    where.push('(t.title LIKE ? OR t.description LIKE ?)');
-    params.push(`%${q}%`, `%${q}%`);
+    // Escape LIKE wildcards so "%" and "_" match literally (correctness).
+    const escaped = String(q).replace(/[\\%_]/g, (c) => `\\${c}`);
+    where.push("(t.title LIKE ? ESCAPE '\\' OR t.description LIKE ? ESCAPE '\\')");
+    params.push(`%${escaped}%`, `%${escaped}%`);
   }
   if (label_id && Number.isInteger(Number(label_id))) {
     where.push('EXISTS (SELECT 1 FROM task_labels tl WHERE tl.task_id = t.id AND tl.label_id = ?)');
@@ -154,29 +163,31 @@ router.post('/', (req, res) => {
   const projectId = ownedProjectId(req.user.id, Number(body.project_id));
   if (!projectId) return res.status(400).json({ error: 'Choose a project you own.' });
 
-  const result = db
-    .prepare(
-      `INSERT INTO tasks (project_id, title, description, status, priority, due_date, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
-      projectId,
-      body.title.trim(),
-      body.description || '',
-      body.status || 'todo',
-      body.priority || 'medium',
-      body.due_date || null,
-      (body.status || 'todo') === 'done' ? new Date().toISOString() : null
-    );
-
-  const taskId = result.lastInsertRowid;
-  if (Array.isArray(body.label_ids) && body.label_ids.length) {
-    const labelError = setTaskLabels(taskId, projectId, body.label_ids);
-    if (labelError) {
-      db.prepare('DELETE FROM tasks WHERE id = ?').run(taskId);
-      return res.status(400).json({ error: labelError });
-    }
+  const hasLabels = Array.isArray(body.label_ids) && body.label_ids.length > 0;
+  if (hasLabels) {
+    // Validate BEFORE inserting: no orphaned task if a label is invalid.
+    const labelError = validateLabelIds(projectId, body.label_ids);
+    if (labelError) return res.status(400).json({ error: labelError });
   }
+
+  const taskId = db.transaction(() => {
+    const result = db
+      .prepare(
+        `INSERT INTO tasks (project_id, title, description, status, priority, due_date, completed_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        projectId,
+        body.title.trim(),
+        body.description || '',
+        body.status || 'todo',
+        body.priority || 'medium',
+        body.due_date || null,
+        (body.status || 'todo') === 'done' ? new Date().toISOString() : null
+      );
+    if (hasLabels) setTaskLabels(result.lastInsertRowid, projectId, body.label_ids);
+    return result.lastInsertRowid;
+  })();
 
   res.status(201).json({ task: withLabels(findTask(taskId)) });
 });
@@ -199,6 +210,13 @@ router.put('/:id', (req, res) => {
     projectId = owned;
   }
 
+  // Validate labels BEFORE the UPDATE: a bad label must not leave the task
+  // half-updated (fields changed, error returned).
+  if (body.label_ids !== undefined) {
+    const labelError = validateLabelIds(projectId, body.label_ids);
+    if (labelError) return res.status(400).json({ error: labelError });
+  }
+
   const nextStatus = body.status !== undefined ? body.status : task.status;
 
   // Stamp completion time only when the status actually flips.
@@ -207,27 +225,33 @@ router.put('/:id', (req, res) => {
     completedAt = body.status === 'done' ? new Date().toISOString() : null;
   }
 
-  db.prepare(
-    `UPDATE tasks
-        SET project_id = ?, title = ?, description = ?, status = ?, priority = ?,
-            due_date = ?, completed_at = ?, updated_at = datetime('now')
-      WHERE id = ? AND project_id IN (SELECT id FROM projects WHERE user_id = ?)`
-  ).run(
-    projectId,
-    body.title !== undefined ? String(body.title).trim() : task.title,
-    body.description !== undefined ? String(body.description) : task.description,
-    nextStatus,
-    body.priority !== undefined ? body.priority : task.priority,
-    body.due_date !== undefined ? body.due_date : task.due_date,
-    completedAt,
-    task.id,
-    req.user.id
-  );
+  const movedProject = projectId !== task.project_id;
 
-  if (body.label_ids !== undefined) {
-    const labelError = setTaskLabels(task.id, projectId, body.label_ids);
-    if (labelError) return res.status(400).json({ error: labelError });
-  }
+  db.transaction(() => {
+    db.prepare(
+      `UPDATE tasks
+          SET project_id = ?, title = ?, description = ?, status = ?, priority = ?,
+              due_date = ?, completed_at = ?, updated_at = datetime('now')
+        WHERE id = ? AND project_id IN (SELECT id FROM projects WHERE user_id = ?)`
+    ).run(
+      projectId,
+      body.title !== undefined ? String(body.title).trim() : task.title,
+      body.description !== undefined ? String(body.description) : task.description,
+      nextStatus,
+      body.priority !== undefined ? body.priority : task.priority,
+      body.due_date !== undefined ? body.due_date : task.due_date,
+      completedAt,
+      task.id,
+      req.user.id
+    );
+
+    if (body.label_ids !== undefined) {
+      setTaskLabels(task.id, projectId, body.label_ids);
+    } else if (movedProject) {
+      // Labels are project-scoped — moving the task orphans the old ones.
+      db.prepare('DELETE FROM task_labels WHERE task_id = ?').run(task.id);
+    }
+  })();
 
   res.json({ task: withLabels(findTask(task.id)) });
 });

@@ -17,7 +17,14 @@ function parseCookies(header = '') {
   for (const pair of header.split(';')) {
     const idx = pair.indexOf('=');
     if (idx === -1) continue;
-    jar[pair.slice(0, idx).trim()] = decodeURIComponent(pair.slice(idx + 1).trim());
+    const key = pair.slice(0, idx).trim();
+    try {
+      jar[key] = decodeURIComponent(pair.slice(idx + 1).trim());
+    } catch {
+      // Malformed percent-encoding must not crash the request (500):
+      // fall back to the raw value — it will simply not match a session.
+      jar[key] = pair.slice(idx + 1).trim();
+    }
   }
   return jar;
 }
@@ -55,7 +62,7 @@ function endSession(res, token) {
 
 /** SHA-256 hex digest — how API tokens are stored (never the raw value). */
 function hashToken(raw) {
-  return require('node:crypto').createHash('sha256').update(raw).digest('hex');
+  return crypto.createHash('sha256').update(raw).digest('hex');
 }
 
 /** Look up an `Authorization: Bearer tf_…` personal access token. */
