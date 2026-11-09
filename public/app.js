@@ -19,6 +19,8 @@ const PRIORITY_LABEL = { low: 'Low', medium: 'Medium', high: 'High' };
 const ICONS = {
   edit: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>',
   trash: '<svg viewBox="0 0 24 24"><path d="M3 6h18"/><path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>',
+  comment:
+    '<svg viewBox="0 0 24 24"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.3 9 9 0 0 1-3.3-.6L4 21l1.8-4.9a8.1 8.1 0 0 1-1.3-4.6A8.4 8.4 0 0 1 13 3.2a8.4 8.4 0 0 1 8 8.3z"/></svg>',
 };
 
 const state = {
@@ -35,6 +37,7 @@ const state = {
   allLabels: null,     // flat list for the tasks-page filter
   labelFormOpen: false,
   labelColor: '#6366f1',
+  activityProject: 'all',
 };
 
 const LABEL_COLORS = ['#6366f1', '#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
@@ -128,8 +131,11 @@ function fmtDue(due) {
   return { text: date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' }), cls: '' };
 }
 
-function relTime(sqlDateTime) {
-  const t = Date.parse(`${sqlDateTime.replace(' ', 'T')}Z`);
+function relTime(value) {
+  if (!value) return '';
+  const s = String(value);
+  // SQLite stores "YYYY-MM-DD HH:MM:SS" (UTC); seed data uses ISO strings.
+  const t = Date.parse(s.includes('T') ? s : `${s.replace(' ', 'T')}Z`);
   if (Number.isNaN(t)) return '';
   const mins = Math.max(0, Math.round((Date.now() - t) / 60000));
   if (mins < 2) return 'just now';
@@ -261,6 +267,7 @@ function parseRoute() {
   if (parts[0] === 'projects' && parts[1]) return { name: 'project', id: Number(parts[1]) };
   if (parts[0] === 'projects') return { name: 'projects', id: null };
   if (parts[0] === 'tasks') return { name: 'tasks', id: null };
+  if (parts[0] === 'activity') return { name: 'activity', id: null };
   if (parts[0] === 'admin') return { name: 'admin', id: null };
   return { name: 'dashboard', id: null };
 }
@@ -328,6 +335,9 @@ async function renderRoute({ silent = false } = {}) {
     } else if (state.route.name === 'projects') {
       setTitle('Projects', `${state.projects.length} project${state.projects.length === 1 ? '' : 's'}`);
       renderProjects();
+    } else if (state.route.name === 'activity') {
+      setTitle('Activity', 'Everything that happened across your projects');
+      await renderActivity();
     } else if (state.route.name === 'admin') {
       setTitle('Admin', 'Platform overview & user management');
       await renderAdmin();
@@ -536,6 +546,7 @@ function taskRowHTML(t) {
           <span>·</span>
           <span class="prio-dot ${t.priority}"></span> ${PRIORITY_LABEL[t.priority]}
           ${labelChips}
+          ${t.comment_count ? `<span class="comment-pill" title="${t.comment_count} comment${t.comment_count === 1 ? '' : 's'}">${ICONS.comment} ${t.comment_count}</span>` : ''}
           ${t.description ? `<span>· ${esc(t.description.slice(0, 60))}${t.description.length > 60 ? '…' : ''}</span>` : ''}
         </div>
       </div>
@@ -686,6 +697,7 @@ function kcardHTML(t) {
       <div class="kcard-meta">
         <span class="prio-dot ${t.priority}" title="${PRIORITY_LABEL[t.priority]} priority"></span>
         ${due.text ? `<span class="task-due ${due.cls}">${due.text}</span>` : ''}
+        ${t.comment_count ? `<span class="comment-pill" title="${t.comment_count} comment${t.comment_count === 1 ? '' : 's'}">${ICONS.comment} ${t.comment_count}</span>` : ''}
       </div>
       ${t.labels && t.labels.length
         ? `<div class="kcard-labels">${t.labels.map(labelChipHTML).join('')}</div>`
@@ -892,9 +904,103 @@ async function openTaskModal(task = null, defaultProjectId = null) {
 
   $('#deleteTaskBtn').hidden = !task;
 
+  // Comments exist only for saved tasks; a new task gets them after saving.
+  const commentsBlock = $('#taskComments');
+  commentsBlock.hidden = !task;
+  if (task) {
+    $('#commentBody').value = '';
+    $('#commentList').innerHTML = '';
+    await loadComments(task.id);
+  }
+
   openModal('taskModal');
   form.elements.title.focus();
 }
+
+/* ---------------- comments ---------------- */
+
+function renderCommentList(comments) {
+  const box = $('#commentList');
+  $('#commentCount').textContent = comments.length ? `(${comments.length})` : '';
+  if (!comments.length) {
+    box.innerHTML = '<p class="comment-empty">No comments yet — start the conversation.</p>';
+    return;
+  }
+
+  box.innerHTML = comments
+    .map((c) => {
+      const initials = c.author.name.split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+      return `
+        <div class="comment">
+          <div class="comment-avatar">${esc(initials)}</div>
+          <div class="comment-main">
+            <div class="comment-head">
+              <strong>${esc(c.author.name)}</strong>
+              <span>${relTime(c.created_at)}</span>
+              ${c.author.id === state.user.id
+                ? `<button type="button" class="icon-btn comment-del" data-del-comment="${c.id}" title="Delete comment">${ICONS.trash}</button>`
+                : ''}
+            </div>
+            <p>${esc(c.body)}</p>
+          </div>
+        </div>`;
+    })
+    .join('');
+}
+
+async function loadComments(taskId) {
+  try {
+    const { comments } = await api(`/tasks/${taskId}/comments`);
+    renderCommentList(comments);
+  } catch (err) {
+    $('#commentList').innerHTML = `<p class="comment-empty">${esc(err.message)}</p>`;
+  }
+}
+
+$('#commentSubmit').addEventListener('click', async () => {
+  const taskId = Number($('#taskForm').elements.id.value);
+  const input = $('#commentBody');
+  const body = input.value.trim();
+  if (!taskId) return;
+  if (!body) {
+    toast('Write something first.', 'err');
+    input.focus();
+    return;
+  }
+
+  const btn = $('#commentSubmit');
+  btn.disabled = true;
+  try {
+    await api(`/tasks/${taskId}/comments`, { method: 'POST', body: { body } });
+    input.value = '';
+    await loadComments(taskId);
+    toast('Comment posted');
+  } catch (err) {
+    toast(err.message, 'err');
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+$('#commentBody').addEventListener('keydown', (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+    e.preventDefault();
+    $('#commentSubmit').click();
+  }
+});
+
+$('#commentList').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-del-comment]');
+  if (!btn) return;
+  if (!confirm('Delete this comment?')) return;
+  try {
+    await api(`/comments/${btn.dataset.delComment}`, { method: 'DELETE' });
+    await loadComments(Number($('#taskForm').elements.id.value));
+    toast('Comment deleted');
+  } catch (err) {
+    toast(err.message, 'err');
+  }
+});
 
 /* Re-render the label picker when the project changes. */
 $('#taskForm').addEventListener('change', (e) => {
@@ -1260,6 +1366,97 @@ document.addEventListener('keydown', (e) => {
   if (e.key !== 'Escape') return;
   $$('.modal-backdrop:not([hidden])').forEach((m) => closeModal(m.id));
 });
+
+/* ============================================================
+   ACTIVITY
+   ============================================================ */
+
+const ACTIVITY_VERB = {
+  'project.created': 'created project',
+  'project.updated': 'updated project',
+  'task.created': 'added task',
+  'task.updated': 'updated task',
+  'task.status_changed': 'moved task',
+  'task.completed': 'completed',
+  'task.reopened': 'reopened task',
+  'task.moved': 'moved task',
+  'task.deleted': 'deleted task',
+  'comment.added': 'commented on',
+  'comment.deleted': 'deleted a comment on',
+};
+
+const ACTIVITY_EMOJI = {
+  'project.created': '📁',
+  'project.updated': '✏️',
+  'task.created': '➕',
+  'task.updated': '✏️',
+  'task.status_changed': '🔄',
+  'task.completed': '✅',
+  'task.reopened': '↩️',
+  'task.moved': '📦',
+  'task.deleted': '🗑️',
+  'comment.added': '💬',
+  'comment.deleted': '🧹',
+};
+
+async function renderActivity() {
+  const pid = state.activityProject;
+  const query = pid && pid !== 'all' ? `?project_id=${pid}&limit=80` : '?limit=80';
+  const { activity } = await api(`/activity${query}`);
+
+  const projectOptions = state.projects
+    .map(
+      (p) =>
+        `<option value="${p.id}" ${String(p.id) === String(pid) ? 'selected' : ''}>${esc(p.name)}</option>`
+    )
+    .join('');
+
+  const items = activity.length
+    ? activity
+        .map(
+          (e) => `
+        <div class="activity-item">
+          <div class="activity-icon">${ACTIVITY_EMOJI[e.action] || '•'}</div>
+          <div class="activity-main">
+            <p class="activity-line">
+              <strong>${esc(e.actor_name)}</strong>
+              ${ACTIVITY_VERB[e.action] || esc(e.action)}
+              <span class="activity-subject">${esc(e.subject)}</span>
+            </p>
+            ${e.detail ? `<p class="activity-detail">${esc(e.detail)}</p>` : ''}
+            <div class="activity-meta">
+              <span class="project-tag"><i style="background:${esc(e.project_color)}"></i>${esc(e.project_name)}</span>
+              <span>·</span>
+              <span>${relTime(e.created_at)}</span>
+            </div>
+          </div>
+        </div>`
+        )
+        .join('')
+    : `<div class="empty">
+         <span class="emoji">🌱</span>
+         <h3>No activity yet</h3>
+         <p>Create a project, complete a task or leave a comment and it will show up here.</p>
+       </div>`;
+
+  $('#view').innerHTML = `
+    <div class="filters">
+      <select id="activityProject" aria-label="Filter activity by project">
+        <option value="all">All projects</option>
+        ${projectOptions}
+      </select>
+      <span class="spacer"></span>
+      <span class="count">${activity.length} event${activity.length === 1 ? '' : 's'}</span>
+    </div>
+    <section class="card activity-card">
+      <div class="activity-list">${items}</div>
+    </section>`;
+
+  $('#activityProject').addEventListener('change', (e) => {
+    state.activityProject = e.target.value;
+    renderActivity();
+  });
+}
 
 /* ============================================================
    ADMIN (admins only — the nav link is hidden for everyone else)

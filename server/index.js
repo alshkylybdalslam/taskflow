@@ -15,6 +15,8 @@ const dashboardRoutes = require('./routes/dashboard');
 const labelRoutes = require('./routes/labels');
 const tokenRoutes = require('./routes/tokens');
 const adminRoutes = require('./routes/admin');
+const commentRoutes = require('./routes/comments');
+const activityRoutes = require('./routes/activity');
 
 const app = express();
 
@@ -66,6 +68,9 @@ app.use('/api/tokens', tokenRoutes);
 app.use('/api/admin', adminRoutes);
 // Label endpoints live under /projects/… and /tasks/… paths:
 app.use('/api', labelRoutes);
+// Comments have /tasks/:id/comments and /comments/:id paths:
+app.use('/api', commentRoutes);
+app.use('/api/activity', activityRoutes);
 
 // --- Interactive API documentation ------------------------------------
 // The machine-readable spec and the Swagger UI must be mounted BEFORE the

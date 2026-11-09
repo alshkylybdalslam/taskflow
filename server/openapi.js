@@ -87,8 +87,62 @@ const schemas = {
         items: { $ref: '#/components/schemas/TaskLabel' },
         description: 'Labels attached to this task',
       },
+      comment_count: { type: 'integer', description: 'Number of comments on the task', example: 2 },
     },
     required: ['id', 'project_id', 'title', 'status', 'priority', 'labels'],
+  },
+
+  Comment: {
+    type: 'object',
+    properties: {
+      id: id('Comment id'),
+      task_id: id('Task the comment belongs to'),
+      body: { type: 'string', maxLength: 2000, example: 'Looks good — shipping after the review.' },
+      created_at: dateTime('Creation timestamp'),
+      author: {
+        type: 'object',
+        properties: {
+          id: id('Author user id'),
+          name: { type: 'string', example: 'Demo User' },
+        },
+        required: ['id', 'name'],
+      },
+    },
+    required: ['id', 'task_id', 'body', 'created_at', 'author'],
+  },
+
+  ActivityEvent: {
+    type: 'object',
+    properties: {
+      id: id('Event id'),
+      action: {
+        type: 'string',
+        description: 'Event type',
+        enum: [
+          'project.created',
+          'project.updated',
+          'task.created',
+          'task.updated',
+          'task.status_changed',
+          'task.completed',
+          'task.reopened',
+          'task.moved',
+          'task.deleted',
+          'comment.added',
+          'comment.deleted',
+        ],
+        example: 'task.completed',
+      },
+      subject: { type: 'string', description: 'Task or project title at event time', example: 'Write API docs' },
+      detail: { type: 'string', description: 'Short human-readable context', example: 'todo → done' },
+      project_id: id('Owning project'),
+      project_name: { type: 'string', example: 'Website relaunch' },
+      project_color: { type: 'string', example: '#4f46e5' },
+      task_id: { type: 'integer', nullable: true, description: 'Null after the task is deleted' },
+      actor_name: { type: 'string', example: 'Demo User' },
+      created_at: dateTime('When the event happened'),
+    },
+    required: ['id', 'action', 'subject', 'project_id', 'created_at'],
   },
 
   Project: {
@@ -675,6 +729,94 @@ const paths = {
     },
   },
 
+  /* --------------------------- comments --------------------------- */
+  '/api/tasks/{id}/comments': {
+    get: {
+      tags: ['Comments'],
+      summary: 'List a task’s comments',
+      description: 'Oldest first. A task is visible only to the owner of its project.',
+      security: AUTH,
+      parameters: [pathId()],
+      responses: {
+        200: {
+          description: 'Comments on the task',
+          content: json({
+            type: 'object',
+            properties: { comments: { type: 'array', items: { $ref: '#/components/schemas/Comment' } } },
+          }),
+        },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    },
+    post: {
+      tags: ['Comments'],
+      summary: 'Add a comment',
+      security: AUTH,
+      parameters: [pathId()],
+      requestBody: {
+        required: true,
+        content: json({
+          type: 'object',
+          required: ['body'],
+          properties: { body: { type: 'string', minLength: 1, maxLength: 2000, example: 'On it.' } },
+        }),
+      },
+      responses: {
+        201: {
+          description: 'The new comment',
+          content: json({
+            type: 'object',
+            properties: { comment: { $ref: '#/components/schemas/Comment' } },
+          }),
+        },
+        400: { $ref: '#/components/responses/BadRequest' },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    },
+  },
+
+  '/api/comments/{id}': {
+    delete: {
+      tags: ['Comments'],
+      summary: 'Delete a comment',
+      security: AUTH,
+      parameters: [pathId()],
+      responses: {
+        200: { description: 'Deleted', content: json({ $ref: '#/components/schemas/Ok' }) },
+        401: { $ref: '#/components/responses/Unauthorized' },
+        404: { $ref: '#/components/responses/NotFound' },
+      },
+    },
+  },
+
+  /* --------------------------- activity --------------------------- */
+  '/api/activity': {
+    get: {
+      tags: ['Activity'],
+      summary: 'Recent activity across my projects',
+      description: 'Newest first. Deleted tasks keep their events (the task id becomes null).',
+      security: AUTH,
+      parameters: [
+        { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 100, default: 50 } },
+        { name: 'project_id', in: 'query', schema: { type: 'integer' }, description: 'Only this project' },
+      ],
+      responses: {
+        200: {
+          description: 'Activity events',
+          content: json({
+            type: 'object',
+            properties: {
+              activity: { type: 'array', items: { $ref: '#/components/schemas/ActivityEvent' } },
+            },
+          }),
+        },
+        401: { $ref: '#/components/responses/Unauthorized' },
+      },
+    },
+  },
+
   /* ----------------------------- tokens ---------------------------- */
   '/api/tokens': {
     get: {
@@ -920,6 +1062,8 @@ const spec = {
     { name: 'Projects', description: 'Projects with rolled-up task stats' },
     { name: 'Tasks', description: 'Task CRUD with filters' },
     { name: 'Labels', description: 'Project-scoped labels attached to tasks' },
+    { name: 'Comments', description: 'Discussion threads under tasks' },
+    { name: 'Activity', description: 'Audit trail across projects' },
     { name: 'Tokens', description: 'Personal access tokens for scripts' },
     { name: 'Dashboard', description: 'Aggregated stats in one request' },
     { name: 'Admin', description: 'Platform stats & user management (admin role only)' },

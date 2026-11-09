@@ -105,10 +105,13 @@ function seed() {
 
   let taskCount = 0;
   let labelCount = 0;
+  const taskMeta = new Map(); // title → { id, projectId, projectName, status, dueOffset }
+  const projectIds = new Map(); // name → id
   const seedAll = db.transaction(() => {
     for (const project of PROJECTS) {
       const projectId = insertProject.run(userId, project.name, project.description, project.color)
         .lastInsertRowid;
+      projectIds.set(project.name, projectId);
 
       const labelIds = {};
       for (const [labelName, labelColor] of project.labels || []) {
@@ -126,11 +129,91 @@ function seed() {
           status === 'done' ? new Date(Date.now() + dueOffset * 86400000).toISOString() : null
         ).lastInsertRowid;
         for (const name of labelNames) linkLabel.run(taskId, labelIds[name]);
+        taskMeta.set(title, { id: taskId, projectId, projectName: project.name, status, dueOffset });
         taskCount++;
       }
     }
   });
   seedAll();
+
+  // ---- activity trail + comments (so the feed is alive on first login) ----
+  const insertActivity = db.prepare(
+    `INSERT INTO activity (user_id, project_id, task_id, action, subject, detail, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now', ?))`
+  );
+  const insertComment = db.prepare(
+    `INSERT INTO comments (task_id, user_id, body, created_at) VALUES (?, ?, ?, datetime('now', ?))`
+  );
+
+  const seedFeed = db.transaction(() => {
+    PROJECTS.forEach((project, i) => {
+      insertActivity.run(
+        userId,
+        projectIds.get(project.name),
+        null,
+        'project.created',
+        project.name,
+        project.description.slice(0, 80),
+        `-${24 - i * 2} days`
+      );
+    });
+
+    let i = 0;
+    for (const [title, meta] of taskMeta) {
+      insertActivity.run(
+        userId,
+        meta.projectId,
+        meta.id,
+        'task.created',
+        title,
+        meta.status,
+        `-${21 - Math.min(i, 19)} days`
+      );
+      i++;
+    }
+
+    // Completed tasks get their own events, oldest first.
+    let c = 0;
+    for (const [title, meta] of taskMeta) {
+      if (meta.status !== 'done') continue;
+      insertActivity.run(
+        userId,
+        meta.projectId,
+        meta.id,
+        'task.completed',
+        title,
+        'todo → done',
+        `-${9 - c} days`
+      );
+      c++;
+    }
+  });
+  seedFeed();
+
+  const SEED_COMMENTS = [
+    ['Landing page — hero and social proof', 'Hero copy is ready for review — feedback welcome.', '-2 days'],
+    ['Landing page — hero and social proof', 'Checked on mobile: the CTA needs a little more breathing room.', '-1 days'],
+    ['Push notification service integration', 'APNs certificates expire next month — reminder is on the calendar.', '-6 hours'],
+    ['Outline next 4 post ideas', 'Vote: SQLite internals or an accessibility deep-dive next?', '-2 hours'],
+  ];
+
+  const seedComments = db.transaction(() => {
+    for (const [title, body, offset] of SEED_COMMENTS) {
+      const meta = taskMeta.get(title);
+      if (!meta) continue;
+      insertComment.run(meta.id, userId, body, offset);
+      insertActivity.run(
+        userId,
+        meta.projectId,
+        meta.id,
+        'comment.added',
+        title,
+        body.slice(0, 80),
+        offset
+      );
+    }
+  });
+  seedComments();
 
   console.log(
     `✔ Seeded demo account with ${PROJECTS.length} projects, ${taskCount} tasks and ${labelCount} labels.`

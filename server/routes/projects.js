@@ -3,6 +3,7 @@
 const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
+const { logActivity } = require('../activity');
 
 const router = express.Router();
 const COLOR_RE = /^#[0-9a-f]{6}$/i;
@@ -76,6 +77,14 @@ router.post('/', (req, res) => {
     .prepare('INSERT INTO projects (user_id, name, description, color) VALUES (?, ?, ?, ?)')
     .run(req.user.id, name.trim(), String(description), color);
 
+  logActivity({
+    userId: req.user.id,
+    projectId: result.lastInsertRowid,
+    action: 'project.created',
+    subject: name.trim(),
+    detail: String(description).slice(0, 80),
+  });
+
   const project = db
     .prepare(`${PROJECT_STATS} WHERE p.id = ? GROUP BY p.id`)
     .get(result.lastInsertRowid);
@@ -106,6 +115,22 @@ router.put('/:id', (req, res) => {
   const updated = db
     .prepare(`${PROJECT_STATS} WHERE p.id = ? GROUP BY p.id`)
     .get(project.id);
+
+  const changed = [
+    name !== undefined && 'name',
+    description !== undefined && 'description',
+    color !== undefined && 'color',
+  ].filter(Boolean);
+  if (changed.length) {
+    logActivity({
+      userId: req.user.id,
+      projectId: project.id,
+      action: 'project.updated',
+      subject: updated.name,
+      detail: changed.join(', '),
+    });
+  }
+
   res.json({ project: updated });
 });
 

@@ -4,6 +4,7 @@ const express = require('express');
 const db = require('../db');
 const { requireAuth } = require('../middleware/auth');
 const { labelsFor } = require('./labels');
+const { logActivity } = require('../activity');
 
 const router = express.Router();
 const STATUSES = ['todo', 'in_progress', 'done'];
@@ -17,7 +18,8 @@ router.use(requireAuth);
 function findTask(id) {
   return db
     .prepare(
-      `SELECT t.*, p.user_id AS owner_id, p.name AS project_name, p.color AS project_color
+      `SELECT t.*, p.user_id AS owner_id, p.name AS project_name, p.color AS project_color,
+              (SELECT COUNT(*) FROM comments c WHERE c.task_id = t.id) AS comment_count
          FROM tasks t
          JOIN projects p ON p.id = t.project_id
         WHERE t.id = ?`
@@ -140,7 +142,8 @@ router.get('/', (req, res) => {
     .prepare(
       `SELECT t.id, t.project_id, t.title, t.description, t.status, t.priority,
               t.due_date, t.created_at, t.updated_at, t.completed_at,
-              p.name AS project_name, p.color AS project_color
+              p.name AS project_name, p.color AS project_color,
+              (SELECT COUNT(*) FROM comments c WHERE c.task_id = t.id) AS comment_count
          FROM tasks t
          JOIN projects p ON p.id = t.project_id
         WHERE ${where.join(' AND ')}
@@ -186,6 +189,14 @@ router.post('/', (req, res) => {
         (body.status || 'todo') === 'done' ? new Date().toISOString() : null
       );
     if (hasLabels) setTaskLabels(result.lastInsertRowid, projectId, body.label_ids);
+    logActivity({
+      userId: req.user.id,
+      projectId,
+      taskId: result.lastInsertRowid,
+      action: 'task.created',
+      subject: body.title.trim(),
+      detail: body.status || 'todo',
+    });
     return result.lastInsertRowid;
   })();
 
@@ -227,6 +238,21 @@ router.put('/:id', (req, res) => {
 
   const movedProject = projectId !== task.project_id;
 
+  // Describe the change for the activity feed. Status flips get their own
+  // action names so the UI can use distinct icons.
+  let action = 'task.updated';
+  let detail = ['title', 'description', 'priority', 'due_date', 'project_id', 'label_ids']
+    .filter((key) => body[key] !== undefined)
+    .join(', ');
+  if (body.status !== undefined && body.status !== task.status) {
+    action =
+      body.status === 'done' ? 'task.completed' : task.status === 'done' ? 'task.reopened' : 'task.status_changed';
+    detail = `${task.status} → ${body.status}`;
+  } else if (movedProject) {
+    action = 'task.moved';
+    detail = `Moved to ${db.prepare('SELECT name FROM projects WHERE id = ?').get(projectId).name}`;
+  }
+
   db.transaction(() => {
     db.prepare(
       `UPDATE tasks
@@ -251,6 +277,15 @@ router.put('/:id', (req, res) => {
       // Labels are project-scoped — moving the task orphans the old ones.
       db.prepare('DELETE FROM task_labels WHERE task_id = ?').run(task.id);
     }
+
+    logActivity({
+      userId: req.user.id,
+      projectId,
+      taskId: task.id,
+      action,
+      subject: body.title !== undefined ? String(body.title).trim() : task.title,
+      detail,
+    });
   })();
 
   res.json({ task: withLabels(findTask(task.id)) });
@@ -262,7 +297,18 @@ router.delete('/:id', (req, res) => {
   if (!task || task.owner_id !== req.user.id) {
     return res.status(404).json({ error: 'Task not found.' });
   }
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+  db.transaction(() => {
+    // Log first: deleting the task nulls activity.task_id but keeps the event.
+    logActivity({
+      userId: req.user.id,
+      projectId: task.project_id,
+      taskId: task.id,
+      action: 'task.deleted',
+      subject: task.title,
+      detail: task.project_name,
+    });
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(task.id);
+  })();
   res.json({ ok: true });
 });
 

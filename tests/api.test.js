@@ -527,6 +527,116 @@ test('search treats % and _ literally instead of as LIKE wildcards', async () =>
   await req(`/api/tasks/${two.data.task.id}`, { method: 'DELETE', cookie: cookieA });
 });
 
+/* ---------------- comments & activity ---------------- */
+
+test('comments start empty, validate, and are invisible to other users', async () => {
+  const empty = await req(`/api/tasks/${taskId}/comments`, { cookie: cookieA });
+  assert.equal(empty.status, 200);
+  assert.deepEqual(empty.data.comments, []);
+
+  const other = await req(`/api/tasks/${taskId}/comments`, { cookie: cookieB });
+  assert.equal(other.status, 404, "another user's task must not be readable");
+
+  const blank = await req(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { body: '   ' },
+  });
+  assert.equal(blank.status, 400);
+
+  const giant = await req(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { body: 'x'.repeat(2001) },
+  });
+  assert.equal(giant.status, 400);
+  assert.match(giant.data.error, /2000/);
+});
+
+test('adds comments and lists them oldest first with their author', async () => {
+  const first = await req(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { body: 'First thought.' },
+  });
+  assert.equal(first.status, 201);
+  assert.equal(first.data.comment.author.name, 'Ada Lovelace');
+
+  const second = await req(`/api/tasks/${taskId}/comments`, {
+    method: 'POST',
+    cookie: cookieA,
+    body: { body: 'Second thought — with more detail.' },
+  });
+  assert.equal(second.status, 201);
+
+  const list = await req(`/api/tasks/${taskId}/comments`, { cookie: cookieA });
+  assert.deepEqual(
+    list.data.comments.map((c) => c.body),
+    ['First thought.', 'Second thought — with more detail.']
+  );
+
+  // Task responses carry the count for the badge in lists and on cards.
+  const tasks = await req('/api/tasks?q=Design the landing page', { cookie: cookieA });
+  assert.equal(tasks.data.tasks[0].comment_count, 2);
+});
+
+test('deleting a comment is owner-only and leaves an activity event', async () => {
+  const list = await req(`/api/tasks/${taskId}/comments`, { cookie: cookieA });
+  const target = list.data.comments[1];
+
+  const byOther = await req(`/api/comments/${target.id}`, { method: 'DELETE', cookie: cookieB });
+  assert.equal(byOther.status, 404);
+
+  const del = await req(`/api/comments/${target.id}`, { method: 'DELETE', cookie: cookieA });
+  assert.equal(del.status, 200);
+
+  const after = await req(`/api/tasks/${taskId}/comments`, { cookie: cookieA });
+  assert.equal(after.data.comments.length, 1);
+
+  const feed = await req('/api/activity?limit=100', { cookie: cookieA });
+  assert.ok(
+    feed.data.activity.some((e) => e.action === 'comment.added'),
+    'posting a comment must be logged'
+  );
+  assert.ok(
+    feed.data.activity.some((e) => e.action === 'comment.deleted'),
+    'deleting a comment must be logged'
+  );
+});
+
+test('activity feed is per-user and filterable by project', async () => {
+  const mine = await req('/api/activity?limit=100', { cookie: cookieA });
+  assert.equal(mine.status, 200);
+  assert.ok(mine.data.activity.some((e) => e.action === 'project.created'));
+  assert.ok(mine.data.activity.some((e) => e.action === 'task.created'));
+
+  // The other user's feed must not leak Ada's task titles.
+  const theirs = await req('/api/activity?limit=100', { cookie: cookieB });
+  assert.ok(!theirs.data.activity.some((e) => e.subject === 'Design the landing page'));
+
+  const scoped = await req(`/api/activity?project_id=${projectId}&limit=100`, { cookie: cookieA });
+  assert.ok(scoped.data.activity.length > 0);
+  assert.ok(scoped.data.activity.every((e) => e.project_id === projectId));
+});
+
+test('an activity entry survives deletion of its task', async () => {
+  const created = await req('/api/tasks', {
+    method: 'POST',
+    cookie: cookieA,
+    body: { project_id: projectId, title: 'Short-lived audit subject' },
+  });
+  const id = created.data.task.id;
+
+  await req(`/api/tasks/${id}`, { method: 'DELETE', cookie: cookieA });
+
+  const feed = await req('/api/activity?limit=100', { cookie: cookieA });
+  const event = feed.data.activity.find(
+    (e) => e.action === 'task.deleted' && e.subject === 'Short-lived audit subject'
+  );
+  assert.ok(event, 'the deletion event must remain in the feed');
+  assert.equal(event.task_id, null, 'the task row is gone; the event keeps its text');
+});
+
 /* ---------------- API tokens ---------------- */
 
 let apiSecret;
@@ -637,7 +747,7 @@ test('OpenAPI spec is served at /api/docs.json', async () => {
   assert.equal(status, 200);
   assert.equal(data.openapi, '3.0.3');
   const operations = Object.values(data.paths).reduce((n, p) => n + Object.keys(p).length, 0);
-  assert.equal(operations, 28, 'the spec must document every endpoint');
+  assert.equal(operations, 32, 'the spec must document every endpoint');
   assert.ok(data.components.securitySchemes.cookieAuth, 'cookie auth documented');
   assert.ok(data.components.securitySchemes.bearerAuth, 'bearer token auth documented');
 });

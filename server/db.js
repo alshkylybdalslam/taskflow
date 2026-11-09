@@ -88,6 +88,28 @@ db.exec(`
     last_used_at TEXT
   );
 
+  -- Threaded discussion under a task.
+  CREATE TABLE IF NOT EXISTS comments (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    task_id    INTEGER NOT NULL REFERENCES tasks(id)  ON DELETE CASCADE,
+    user_id    INTEGER NOT NULL REFERENCES users(id)  ON DELETE CASCADE,
+    body       TEXT    NOT NULL,
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Human-readable audit trail. task_id survives task deletion as NULL so a
+  -- "task deleted" event keeps its subject and its project.
+  CREATE TABLE IF NOT EXISTS activity (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id    INTEGER NOT NULL REFERENCES users(id)    ON DELETE CASCADE,
+    project_id INTEGER          REFERENCES projects(id) ON DELETE CASCADE,
+    task_id    INTEGER          REFERENCES tasks(id)    ON DELETE SET NULL,
+    action     TEXT    NOT NULL,
+    subject    TEXT    NOT NULL DEFAULT '',
+    detail     TEXT    NOT NULL DEFAULT '',
+    created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
   CREATE INDEX IF NOT EXISTS idx_sessions_user   ON sessions(user_id);
   CREATE INDEX IF NOT EXISTS idx_projects_user   ON projects(user_id);
   CREATE INDEX IF NOT EXISTS idx_tasks_project   ON tasks(project_id);
@@ -96,6 +118,9 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_labels_project  ON labels(project_id);
   CREATE INDEX IF NOT EXISTS idx_task_labels_l   ON task_labels(label_id);
   CREATE INDEX IF NOT EXISTS idx_api_tokens_user ON api_tokens(user_id);
+  CREATE INDEX IF NOT EXISTS idx_comments_task   ON comments(task_id);
+  CREATE INDEX IF NOT EXISTS idx_activity_user   ON activity(user_id, created_at);
+  CREATE INDEX IF NOT EXISTS idx_activity_project ON activity(project_id);
 `);
 
 // Migration: databases created before roles existed get the column added.

@@ -9,7 +9,7 @@ that tells you exactly where you stand.
 
 [![CI](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml)
 [![Live demo](https://img.shields.io/badge/live%20demo-open%20app-4f46e5?logo=render&logoColor=white)](https://taskflow-udro.onrender.com)
-[![Coverage](https://img.shields.io/badge/coverage-96.94%25-brightgreen.svg)](#-testing--coverage)
+[![Coverage](https://img.shields.io/badge/coverage-96.97%25-brightgreen.svg)](#-testing--coverage)
 [![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x%20%7C%2022.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![SQLite](https://img.shields.io/badge/SQLite-3-003B57?logo=sqlite&logoColor=white)](https://sqlite.org/)
@@ -32,12 +32,13 @@ that tells you exactly where you stand.
 - **🏷 Labels** — project-scoped tags on a `task_labels` junction table; create, assign, filter and delete them from the UI
 - **⏰ Deadlines** — due dates on every task, overdue highlighting, and *Overdue / Due today / No due date* filters
 - **🔎 Filtering & search** — by project, status, priority, deadline, label, or free-text search
+- **💬 Comments & activity** — a discussion thread under every task (post, delete, `Ctrl/⌘+Enter`, live counts) and a per-project audit feed covering project, task and comment events
 - **📊 Dashboard** — status donut, 7-day completion trend, per-project progress, upcoming deadlines and overdue alerts — all from a single API request
 - **🔑 API tokens** — personal access tokens (`Bearer tf_…`) for scripted access; only the SHA-256 hash is stored, the secret is shown exactly once
 - **📖 Interactive API docs** — OpenAPI 3.0.3 spec with Swagger UI at [`/api/docs`](https://taskflow-udro.onrender.com/api/docs); machine-readable spec at `/api/docs.json`
 - **🌗 Dark mode** — one-click theme toggle, persisted in `localStorage` and applied before first paint (no flash)
 - **📱 Responsive UI** — polished single-page frontend with modals, toasts and empty states
-- **🧪 Tested** — 53 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, rate limiting, write atomicity, security headers, the admin panel and the API docs
+- **🧪 Tested** — 58 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, comments, the activity feed, rate limiting, write atomicity, security headers, the admin panel and the API docs
 
 ## 📸 Screenshots
 
@@ -135,6 +136,10 @@ All endpoints are JSON. Protected routes accept **either** a session cookie
 | POST   | `/api/projects/:id/labels`  | Create a label |
 | POST   | `/api/tasks/:id/labels`     | Attach a label (`{ label_id }`) |
 | DELETE | `/api/tasks/:id/labels/:labelId` | Detach a label |
+| GET    | `/api/tasks/:id/comments`   | Comments on a task, oldest first |
+| POST   | `/api/tasks/:id/comments`   | Add a comment (`{ body }`) |
+| DELETE | `/api/comments/:id`         | Delete a comment (project owner) |
+| GET    | `/api/activity`             | Activity feed — `?limit= &project_id=` |
 | GET    | `/api/tokens`           | List my API tokens (never the secret) |
 | POST   | `/api/tokens`           | Mint a token — returns the raw secret **once** |
 | DELETE | `/api/tokens/:id`       | Revoke a token |
@@ -178,8 +183,9 @@ taskflow/
 ├── server/
 │   ├── index.js            # Express app: security middleware → API → docs → static → SPA
 │   ├── db.js               # SQLite connection + schema (migrations-on-boot)
-│   ├── seed.js             # Demo data generator (projects, tasks, labels)
+│   ├── seed.js             # Demo data generator (projects, tasks, labels, comments)
 │   ├── openapi.js          # OpenAPI 3.0.3 spec (served at /api/docs.json)
+│   ├── activity.js         # logActivity() — writes the audit trail
 │   ├── middleware/
 │   │   └── auth.js         # Sessions, cookies, requireAuth (cookie or bearer)
 │   └── routes/
@@ -188,11 +194,13 @@ taskflow/
 │       ├── projects.js     # Project CRUD + stats
 │       ├── tasks.js        # Task CRUD + filters + ownership checks
 │       ├── labels.js       # Label CRUD + task attach/detach (junction table)
+│       ├── comments.js     # Task comment threads (owned via the task's project)
+│       ├── activity.js     # Activity feed, filterable by project
 │       ├── tokens.js       # Personal access tokens (hash-only storage)
 │       └── dashboard.js    # Aggregated stats in one client request
 ├── public/                 # Frontend SPA (index.html, styles.css, app.js, theme.js)
 ├── tests/
-│   └── api.test.js         # 53 integration tests (node --test)
+│   └── api.test.js         # 58 integration tests (node --test)
 ├── docs/                   # README screenshots
 ├── .github/workflows/
 │   └── ci.yml              # CI: npm ci + tests + coverage (Node 18, 20 & 22) + Docker build/smoke test
@@ -211,7 +219,7 @@ taskflow/
 ## 🧪 Testing & coverage
 
 ```bash
-npm test          # 53 tests, ~3s
+npm test          # 58 tests, ~3s
 npm run coverage  # same tests, built-in V8 coverage table
 ```
 
@@ -219,7 +227,7 @@ npm run coverage  # same tests, built-in V8 coverage table
 -------------------|---------|----------|---------|---------|
 File               | % Stmts | % Branch | % Funcs | % Lines |
 -------------------|---------|----------|---------|---------|
-All files          |   96.94 |    80.79 |   93.75 |   96.94 |
+All files          |   96.97 |    81.76 |   94.05 |   96.97 |
 -------------------|---------|----------|---------|---------|
 ```
 
@@ -235,6 +243,7 @@ CI runs the suite on every push and pull request against Node 18, 20 **and** 22,
 - [x] Interactive API documentation (OpenAPI + Swagger UI)
 - [x] Security hardening (CSP, rate limits, body limits, cookie flags)
 - [x] Admin panel with roles and user management
+- [x] Task comments and an activity feed
 - [ ] Due-date reminders and email notifications
 - [ ] Team workspaces and task assignment
 - [ ] PWA offline support
