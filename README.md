@@ -8,6 +8,7 @@ Projects, tasks, labels, deadlines, a drag-and-drop kanban board and a dashboard
 that tells you exactly where you stand.
 
 [![CI](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml/badge.svg)](https://github.com/alshkylybdalslam/taskflow/actions/workflows/ci.yml)
+[![Live demo](https://img.shields.io/badge/live%20demo-open%20app-4f46e5?logo=render&logoColor=white)](https://taskflow-udro.onrender.com)
 [![Coverage](https://img.shields.io/badge/coverage-96.94%25-brightgreen.svg)](#-testing--coverage)
 [![Node.js](https://img.shields.io/badge/Node.js-18.x%20%7C%2020.x%20%7C%2022.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4.x-000000?logo=express&logoColor=white)](https://expressjs.com/)
@@ -15,6 +16,8 @@ that tells you exactly where you stand.
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 </div>
+
+> **Live demo:** <https://taskflow-udro.onrender.com> — sign in with `demo@taskflow.dev` / `demo1234` (the demo account is an admin, so the admin panel and API docs are included). The free Render instance spins down when idle, so the first visit can take ~30 s; its disk is ephemeral and demo data resets on redeploys.
 
 ---
 
@@ -31,7 +34,7 @@ that tells you exactly where you stand.
 - **🔎 Filtering & search** — by project, status, priority, deadline, label, or free-text search
 - **📊 Dashboard** — status donut, 7-day completion trend, per-project progress, upcoming deadlines and overdue alerts — all from a single API request
 - **🔑 API tokens** — personal access tokens (`Bearer tf_…`) for scripted access; only the SHA-256 hash is stored, the secret is shown exactly once
-- **📖 Interactive API docs** — OpenAPI 3.0.3 spec with Swagger UI at [`/api/docs`](http://localhost:3000/api/docs); machine-readable spec at `/api/docs.json`
+- **📖 Interactive API docs** — OpenAPI 3.0.3 spec with Swagger UI at [`/api/docs`](https://taskflow-udro.onrender.com/api/docs); machine-readable spec at `/api/docs.json`
 - **🌗 Dark mode** — one-click theme toggle, persisted in `localStorage` and applied before first paint (no flash)
 - **📱 Responsive UI** — polished single-page frontend with modals, toasts and empty states
 - **🧪 Tested** — 53 integration tests covering auth, CRUD, ownership rules, labels, tokens, deadlines, rate limiting, write atomicity, security headers, the admin panel and the API docs
